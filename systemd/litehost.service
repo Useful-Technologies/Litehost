@@ -1,0 +1,24 @@
+[Unit]
+Description=Litehost Control Panel
+After=network.target nginx.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=litehost
+Group=litehost
+WorkingDirectory=/opt/litehost/panel
+ExecStart=/usr/bin/node /opt/litehost/panel/server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=litehost
+
+EnvironmentFile=-/etc/hostctl/litehost.env
+
+# Allow the panel to write nginx configs and reload via sudoers
+# NoNewPrivileges must NOT be set — sudo is required for nginx reload
+
+[Install]
+WantedBy=multi-user.target
