@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  Litehost — Full Install Script for Ubuntu 22.04 Minimal
-#  Run as root: sudo bash install.sh
+#  Quick install: curl -fsSL https://raw.githubusercontent.com/Useful-Technologies/Litehost/main/install.sh | sudo bash
 # ============================================================
 set -euo pipefail
 
@@ -36,7 +36,24 @@ CONF_DIR="/etc/hostctl"
 LOG_DIR="/var/log/hostctl"
 PANEL_PORT="${PANEL_PORT:-3000}"
 LITEHOST_USER="litehost"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+LITEHOST_REPO="https://github.com/Useful-Technologies/Litehost"
+
+# ── Source detection (supports curl | bash) ──────────────────
+if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+else
+  SCRIPT_DIR=""
+fi
+
+if [[ -z "$SCRIPT_DIR" ]] || [[ ! -d "$SCRIPT_DIR/panel" ]]; then
+  info "Downloading Litehost from GitHub…"
+  apt-get install -y -qq git >/dev/null 2>&1
+  TMP_CLONE=$(mktemp -d)
+  trap 'rm -rf "$TMP_CLONE"' EXIT
+  git clone --depth=1 "$LITEHOST_REPO" "$TMP_CLONE" >/dev/null 2>&1
+  SCRIPT_DIR="$TMP_CLONE"
+  log "Repository downloaded"
+fi
 
 # Detect public IP
 info "Detecting public IP…"
