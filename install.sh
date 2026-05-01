@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # ============================================================
 #  Litehost — Full Install Script for Ubuntu 22.04 Minimal
-#  Run as root: sudo bash install.sh
+#  Quick install: curl -fsSL https://raw.githubusercontent.com/Useful-Technologies/Litehost/main/install.sh | sudo bash
 # ============================================================
 set -euo pipefail
 
@@ -36,21 +36,24 @@ CONF_DIR="/etc/hostctl"
 LOG_DIR="/var/log/hostctl"
 PANEL_PORT="${PANEL_PORT:-3000}"
 LITEHOST_USER="litehost"
-REPO_URL="https://github.com/Useful-Technologies/Litehost"
+LITEHOST_REPO="https://github.com/Useful-Technologies/Litehost"
 
-# Detect whether we're running from a local checkout (bash install.sh)
-# or piped from curl. If local, use the checkout. If remote, download.
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
-if [[ -d "${SCRIPT_DIR}/panel" ]]; then
-  INSTALL_SRC="$SCRIPT_DIR"
-  info "Using local source: $INSTALL_SRC"
+# ── Source detection (supports curl | bash) ──────────────────
+if [[ -n "${BASH_SOURCE[0]:-}" ]] && [[ -f "${BASH_SOURCE[0]}" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 else
+  SCRIPT_DIR=""
+fi
+
+if [[ -z "$SCRIPT_DIR" ]] || [[ ! -d "$SCRIPT_DIR/panel" ]]; then
   info "Downloading Litehost from GitHub…"
-  INSTALL_SRC="$(mktemp -d)"
-  curl -fsSL "${REPO_URL}/archive/refs/heads/main.tar.gz" \
-    | tar -xz -C "$INSTALL_SRC" --strip-components=1
-  trap 'rm -rf "$INSTALL_SRC"' EXIT
-  log "Source downloaded to $INSTALL_SRC"
+  apt-get install -y -qq git >/dev/null 2>&1
+  TMP_CLONE=$(mktemp -d)
+  trap 'rm -rf "$TMP_CLONE"' EXIT
+  git clone --depth=1 "$LITEHOST_REPO" "$TMP_CLONE" >/dev/null 2>&1
+  SCRIPT_DIR="$TMP_CLONE"
+  log "Repository downloaded"
+>>>>>>> 35c651857083e5943f4a7cca22e7621037700087
 fi
 
 # Detect public IP
@@ -280,10 +283,13 @@ hr; echo -e "${BOLD}Step 15: Setting up SSL auto-renewal${NC}"; hr
 
 CRON_JOB="0 3 * * * certbot renew --quiet --webroot -w /var/www/letsencrypt && systemctl reload nginx"
 
-# Ensure crontab exists (or create empty one)
-( crontab -l 2>/dev/null || true; echo "$CRON_JOB" ) | crontab -
-
-log "Certbot cron renewal configured (daily at 03:00)"
+EXISTING_CRON=$(crontab -l 2>/dev/null || echo "")
+if echo "$EXISTING_CRON" | grep -qF "certbot renew"; then
+  log "Certbot cron already configured"
+else
+  { echo "$EXISTING_CRON"; echo "$CRON_JOB"; } | crontab -
+  log "Certbot cron renewal configured (daily at 03:00)"
+fi
 
 # ── Step 16: Firewall ────────────────────────────────────────
 hr; echo -e "${BOLD}Step 16: Configuring UFW firewall${NC}"; hr
