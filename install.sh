@@ -53,7 +53,6 @@ if [[ -z "$SCRIPT_DIR" ]] || [[ ! -d "$SCRIPT_DIR/panel" ]]; then
   git clone --depth=1 "$LITEHOST_REPO" "$TMP_CLONE" >/dev/null 2>&1
   SCRIPT_DIR="$TMP_CLONE"
   log "Repository downloaded"
->>>>>>> 35c651857083e5943f4a7cca22e7621037700087
 fi
 
 # Detect public IP
