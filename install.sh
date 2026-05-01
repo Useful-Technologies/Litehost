@@ -282,10 +282,13 @@ hr; echo -e "${BOLD}Step 15: Setting up SSL auto-renewal${NC}"; hr
 
 CRON_JOB="0 3 * * * certbot renew --quiet --webroot -w /var/www/letsencrypt && systemctl reload nginx"
 
-# Ensure crontab exists (or create empty one)
-( crontab -l 2>/dev/null || true; echo "$CRON_JOB" ) | crontab -
-
-log "Certbot cron renewal configured (daily at 03:00)"
+EXISTING_CRON=$(crontab -l 2>/dev/null || echo "")
+if echo "$EXISTING_CRON" | grep -qF "certbot renew"; then
+  log "Certbot cron already configured"
+else
+  { echo "$EXISTING_CRON"; echo "$CRON_JOB"; } | crontab -
+  log "Certbot cron renewal configured (daily at 03:00)"
+fi
 
 # ── Step 16: Firewall ────────────────────────────────────────
 hr; echo -e "${BOLD}Step 16: Configuring UFW firewall${NC}"; hr
