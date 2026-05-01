@@ -36,7 +36,22 @@ CONF_DIR="/etc/hostctl"
 LOG_DIR="/var/log/hostctl"
 PANEL_PORT="${PANEL_PORT:-3000}"
 LITEHOST_USER="litehost"
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/Useful-Technologies/Litehost"
+
+# Detect whether we're running from a local checkout (bash install.sh)
+# or piped from curl. If local, use the checkout. If remote, download.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]:-}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+if [[ -d "${SCRIPT_DIR}/panel" ]]; then
+  INSTALL_SRC="$SCRIPT_DIR"
+  info "Using local source: $INSTALL_SRC"
+else
+  info "Downloading Litehost from GitHub…"
+  INSTALL_SRC="$(mktemp -d)"
+  curl -fsSL "${REPO_URL}/archive/refs/heads/main.tar.gz" \
+    | tar -xz -C "$INSTALL_SRC" --strip-components=1
+  trap 'rm -rf "$INSTALL_SRC"' EXIT
+  log "Source downloaded to $INSTALL_SRC"
+fi
 
 # Detect public IP
 info "Detecting public IP…"
