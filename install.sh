@@ -280,6 +280,10 @@ done
 # ── Step 15: Certbot auto-renew ──────────────────────────────
 hr; echo -e "${BOLD}Step 15: Setting up SSL auto-renewal${NC}"; hr
 
+apt-get install -y -qq cron
+systemctl enable cron
+systemctl start cron
+
 CRON_JOB="0 3 * * * certbot renew --quiet --webroot -w /var/www/letsencrypt && systemctl reload nginx"
 
 EXISTING_CRON=$(crontab -l 2>/dev/null || echo "")
