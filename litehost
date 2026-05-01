@@ -1,0 +1,53 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+PANEL_DIR="/opt/litehost/panel"
+REPO="https://github.com/Useful-Technologies/Litehost"
+
+case "${1:-}" in
+  start)
+    systemctl start litehost
+    echo "Litehost started."
+    ;;
+  stop)
+    systemctl stop litehost
+    echo "Litehost stopped."
+    ;;
+  restart)
+    systemctl restart litehost
+    echo "Litehost restarted."
+    ;;
+  status)
+    systemctl status litehost
+    ;;
+  logs)
+    journalctl -u litehost -f
+    ;;
+  update)
+    [[ $EUID -ne 0 ]] && echo "Run as root: sudo litehost update" && exit 1
+    echo "Updating Litehost..."
+
+    TMP=$(mktemp -d)
+    trap 'rm -rf "$TMP"' EXIT
+
+    git clone --depth=1 "$REPO" "$TMP" > /dev/null 2>&1
+
+    cp -r "$TMP/panel/." "$PANEL_DIR/"
+    chown -R litehost:litehost "$PANEL_DIR"
+
+    cd "$PANEL_DIR"
+    npm install --omit=dev --quiet
+    chown -R litehost:litehost "$PANEL_DIR/node_modules"
+
+    # Update the CLI itself
+    cp "$TMP/litehost" /usr/local/bin/litehost
+    chmod +x /usr/local/bin/litehost
+
+    systemctl restart litehost
+    echo "Done. Litehost is up to date."
+    ;;
+  *)
+    echo "Usage: litehost {start|stop|restart|status|logs|update}"
+    exit 1
+    ;;
+esac

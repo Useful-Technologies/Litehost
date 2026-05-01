@@ -322,14 +322,21 @@ ${LOG_DIR}/*.log {
 ROTEOF
 log "Log rotation configured (14-day retention)"
 
+# ── Step 18: CLI ─────────────────────────────────────────────
+hr; echo -e "${BOLD}Step 18: Installing litehost CLI${NC}"; hr
+cp "$SCRIPT_DIR/litehost" /usr/local/bin/litehost
+chmod +x /usr/local/bin/litehost
+log "litehost CLI installed"
+
 # ── Done ─────────────────────────────────────────────────────
 hr
 echo ""
 echo -e "${GREEN}${BOLD}  ✅ Litehost installation complete!${NC}"
 echo ""
 echo -e "  Panel URL:   ${BOLD}http://${SERVER_IP}/${NC}"
-echo -e "  Service:     ${BOLD}systemctl status litehost${NC}"
-echo -e "  Logs:        ${BOLD}journalctl -u litehost -f${NC}"
+echo -e "  Status:      ${BOLD}litehost status${NC}"
+echo -e "  Logs:        ${BOLD}litehost logs${NC}"
+echo -e "  Update:      ${BOLD}sudo litehost update${NC}"
 echo ""
 
 CRED_FILE="$CONF_DIR/owner-credentials.txt"
@@ -342,9 +349,9 @@ if [[ -f "$CRED_FILE" ]]; then
 fi
 
 hr
-echo -e "  ${BLUE}Service commands:${NC}"
-echo    "    systemctl start|stop|restart|status litehost"
-echo    "    journalctl -u litehost -f"
+echo -e "  ${BLUE}CLI commands:${NC}"
+echo    "    litehost start|stop|restart|status|logs"
+echo    "    sudo litehost update"
 echo ""
 echo -e "  ${BLUE}Key paths:${NC}"
 echo    "    Panel:  ${PANEL_DIR}"
