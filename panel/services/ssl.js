@@ -1,15 +1,19 @@
-const { execSync, exec } = require('child_process');
 const fs = require('fs');
+const { execSync } = require('child_process');
+
+const CERT_DIR = '/etc/hostctl/certs';
+
+function certPath(domain) { return `${CERT_DIR}/${domain}/cert.pem`; }
+function keyPath(domain)  { return `${CERT_DIR}/${domain}/key.pem`; }
 
 function hasCertificate(domain) {
-  const certPath = `/etc/letsencrypt/live/${domain}/fullchain.pem`;
-  return fs.existsSync(certPath);
+  return fs.existsSync(certPath(domain)) && fs.existsSync(keyPath(domain));
 }
 
 function getCertExpiry(domain) {
   try {
     const result = execSync(
-      `openssl x509 -enddate -noout -in /etc/letsencrypt/live/${domain}/fullchain.pem`,
+      `openssl x509 -enddate -noout -in ${certPath(domain)}`,
       { stdio: 'pipe' }
     ).toString().trim();
     const match = result.match(/notAfter=(.+)/);
@@ -19,59 +23,22 @@ function getCertExpiry(domain) {
   }
 }
 
-function issueCert(domain, email) {
-  return new Promise((resolve, reject) => {
-    const cmd = [
-      'certbot certonly',
-      '--webroot',
-      `-w /var/www/letsencrypt`,
-      `-d ${domain}`,
-      `--email ${email}`,
-      '--agree-tos',
-      '--non-interactive',
-      '--quiet',
-    ].join(' ');
-
-    exec(cmd, { timeout: 120000 }, (err, stdout, stderr) => {
-      if (err) return reject(new Error(stderr || err.message));
-      resolve({ success: true, domain });
-    });
-  });
+function wrapKey(key) {
+  const trimmed = key.trim();
+  if (trimmed.startsWith('-----')) return trimmed + '\n';
+  return `-----BEGIN PRIVATE KEY-----\n${trimmed}\n-----END PRIVATE KEY-----\n`;
 }
 
-function enableHTTPS(site) {
-  const siteConfPath = `/etc/nginx/sites-available/litehost-${site.name}.conf`;
-  if (!fs.existsSync(siteConfPath)) return false;
-
-  let conf = fs.readFileSync(siteConfPath, 'utf8');
-  if (conf.includes('listen 443')) return true;
-
-  const httpsBlock = `
-server {
-    listen 443 ssl http2;
-    server_name ${site.domain};
-
-    ssl_certificate     /etc/letsencrypt/live/${site.domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${site.domain}/privkey.pem;
-    ssl_protocols       TLSv1.2 TLSv1.3;
-    ssl_ciphers         HIGH:!aNULL:!MD5;
-
-    ${conf.match(/location \/ \{[\s\S]+?\}/)?.[0] || 'location / { return 200; }'}
-}
-`;
-
-  const withRedirect = conf.replace(
-    /listen 80;/,
-    `listen 80;\n    return 301 https://$host$request_uri;`
-  );
-
-  fs.writeFileSync(siteConfPath, withRedirect + '\n' + httpsBlock, 'utf8');
-  return true;
+function installCert(domain, cert, key) {
+  const dir = `${CERT_DIR}/${domain}`;
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(certPath(domain), cert.trim() + '\n', { mode: 0o600 });
+  fs.writeFileSync(keyPath(domain),  wrapKey(key),        { mode: 0o600 });
 }
 
 function getSSLStatus(domain) {
   if (!domain) return { status: 'none', message: 'No domain set' };
-  if (!hasCertificate(domain)) return { status: 'none', message: 'No certificate issued' };
+  if (!hasCertificate(domain)) return { status: 'none', message: 'No certificate installed' };
 
   const expiry = getCertExpiry(domain);
   const now = new Date();
@@ -82,4 +49,4 @@ function getSSLStatus(domain) {
   return { status: 'active', message: `Valid for ${daysLeft} days`, expiry, daysLeft };
 }
 
-module.exports = { hasCertificate, issueCert, enableHTTPS, getSSLStatus };
+module.exports = { hasCertificate, installCert, getSSLStatus };

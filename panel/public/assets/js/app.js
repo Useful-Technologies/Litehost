@@ -226,9 +226,9 @@ function siteOverviewTab(site) {
     <div class="card" style="border-color:var(--yellow)33">
       <div class="card-header">
         <span class="card-title">🔒 Issue SSL Certificate</span>
-        <button class="btn btn-sm btn-primary" onclick="openSSLModal(${site.id})">Issue Free SSL</button>
+        <button class="btn btn-sm btn-primary" onclick="openSSLModal(${site.id})">Install SSL</button>
       </div>
-      <p style="font-size:0.85rem;color:var(--muted)">Issue a free Let's Encrypt certificate. Domain must point to this server first.</p>
+      <p style="font-size:0.85rem;color:var(--muted)">Paste your certificate and private key to enable HTTPS.</p>
     </div>` : ''}
 
     <div class="card">
@@ -606,11 +606,12 @@ function openSSLModal(siteId) {
 }
 
 async function issueSSL() {
-  const email = document.getElementById('sslEmail').value.trim();
-  if (!email) return toast.error('Email required');
+  const cert = document.getElementById('sslCert').value.trim();
+  const key  = document.getElementById('sslKey').value.trim();
+  if (!cert || !key) return toast.error('Certificate and private key are required');
   try {
-    await api.post(`/sites/${sslTargetSiteId}/ssl`, { email });
-    toast.success('SSL certificate issued successfully');
+    await api.post(`/sites/${sslTargetSiteId}/ssl`, { cert, key });
+    toast.success('SSL certificate installed successfully');
     closeModal('sslModal');
     renderSite(sslTargetSiteId);
   } catch (e) { toast.error(e.message); }

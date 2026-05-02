@@ -162,21 +162,27 @@
 <div class="modal-overlay" id="sslModal">
   <div class="modal">
     <div class="modal-header">
-      <span class="modal-title">Issue SSL Certificate</span>
+      <span class="modal-title">Install SSL Certificate</span>
       <button class="modal-close">✕</button>
     </div>
     <p style="color:var(--muted);font-size:0.875rem;margin-bottom:16px">
-      Let's Encrypt will issue a free SSL certificate. Your domain must already point to this server.
+      Paste your certificate and private key below. The certificate should include the full chain if applicable.
     </p>
     <div class="form-row single">
       <div class="form-group">
-        <label>Email for notifications *</label>
-        <input type="email" id="sslEmail" placeholder="admin@example.com" />
+        <label>Certificate (PEM) *</label>
+        <textarea id="sslCert" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="font-family:monospace;font-size:0.8rem"></textarea>
+      </div>
+    </div>
+    <div class="form-row single">
+      <div class="form-group">
+        <label>Private Key (PEM) *</label>
+        <textarea id="sslKey" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----" style="font-family:monospace;font-size:0.8rem"></textarea>
       </div>
     </div>
     <div class="modal-footer">
       <button class="btn btn-secondary" onclick="closeModal('sslModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="issueSSL()">Issue Certificate</button>
+      <button class="btn btn-primary" onclick="issueSSL()">Install Certificate</button>
     </div>
   </div>
 </div>

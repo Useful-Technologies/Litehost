@@ -212,25 +212,20 @@ router.get('/:id/logs', requireAuth, requireSitePermission('view'), (req, res) =
   res.json({ lines: allLines.slice(-lines) });
 });
 
-// Issue SSL certificate
-router.post('/:id/ssl', requireAuth, requireSitePermission('settings'), async (req, res) => {
+// Install SSL certificate
+router.post('/:id/ssl', requireAuth, requireSitePermission('settings'), (req, res) => {
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
   if (!site.domain) return res.status(400).json({ error: 'No domain set' });
 
-  const { email } = req.body;
-  if (!email) return res.status(400).json({ error: 'Email required for SSL issuance' });
-
-  const dnsStatus = dns.checkDNS(site.domain);
-  if (dnsStatus.status !== 'connected') {
-    return res.status(400).json({ error: 'Domain must point to this server before issuing SSL', dns: dnsStatus });
-  }
+  const { cert, key } = req.body;
+  if (!cert || !key) return res.status(400).json({ error: 'Certificate and private key are required' });
 
   try {
-    await ssl.issueCert(site.domain, email);
-    ssl.enableHTTPS(site);
+    ssl.installCert(site.domain, cert, key);
+    nginx.writeSiteConfig(site, true);
     nginx.reloadNginx();
-    res.json({ success: true, message: `SSL certificate issued for ${site.domain}` });
+    res.json({ success: true, message: `SSL certificate installed for ${site.domain}` });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }

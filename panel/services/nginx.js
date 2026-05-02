@@ -15,19 +15,12 @@ function siteEnabledPath(name) {
 
 function sslBlock(domain) {
   return `
-    ssl_certificate     /etc/letsencrypt/live/${domain}/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/${domain}/privkey.pem;
+    ssl_certificate     /etc/hostctl/certs/${domain}/cert.pem;
+    ssl_certificate_key /etc/hostctl/certs/${domain}/key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;`;
-}
-
-function acmeLocation() {
-  return `
-    location /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-    }`;
 }
 
 function staticConfig(site, withSSL) {
@@ -52,7 +45,7 @@ ${withSSL ? sslBlock(site.domain) : ''}
     location / {
         try_files $uri $uri/ /index.html;
     }
-${acmeLocation()}
+
     access_log /var/log/hostctl/${site.name}-access.log;
     error_log  /var/log/hostctl/${site.name}-error.log;
 }`.trim();
@@ -88,7 +81,7 @@ ${withSSL ? sslBlock(site.domain) : ''}
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
     }
-${acmeLocation()}
+
     access_log /var/log/hostctl/${site.name}-access.log;
     error_log  /var/log/hostctl/${site.name}-error.log;
 }`.trim();
@@ -120,7 +113,7 @@ ${withSSL ? sslBlock(site.domain) : ''}
         proxy_cache_bypass $http_upgrade;
         proxy_read_timeout 120s;
     }
-${acmeLocation()}
+
     access_log /var/log/hostctl/${site.name}-access.log;
     error_log  /var/log/hostctl/${site.name}-error.log;
 }`.trim();

@@ -99,16 +99,7 @@ fi
 log "Node.js $(node --version) installed"
 log "npm $(npm --version) installed"
 
-# ── Step 5: Certbot ──────────────────────────────────────────
-hr; echo -e "${BOLD}Step 5: Installing Certbot${NC}"; hr
-if ! command -v certbot &>/dev/null; then
-  snap install --classic certbot >/dev/null 2>&1 || apt-get install -y -qq certbot python3-certbot-nginx
-  ln -sf /snap/bin/certbot /usr/bin/certbot 2>/dev/null || true
-fi
-mkdir -p /var/www/letsencrypt/.well-known/acme-challenge
-log "Certbot installed"
-
-# ── Step 6: SQLite tools ─────────────────────────────────────
+# ── Step 5: SQLite tools ─────────────────────────────────────
 hr; echo -e "${BOLD}Step 6: Installing SQLite${NC}"; hr
 apt-get install -y -qq sqlite3 libsqlite3-dev
 log "SQLite3 installed"
@@ -135,7 +126,7 @@ mkdir -p "$LOG_DIR"
 mkdir -p /etc/nginx/sites-available
 mkdir -p /etc/nginx/sites-enabled
 mkdir -p /tmp/litehost-uploads
-mkdir -p /var/www/letsencrypt
+mkdir -p /etc/hostctl/certs
 
 # Sites dir: litehost owns it, nginx (www-data) needs read access
 chown -R "${LITEHOST_USER}:www-data" "$SITES_DIR"
@@ -208,11 +199,6 @@ server {
         proxy_read_timeout 60s;
     }
 
-    # Let's Encrypt webroot challenge
-    location /.well-known/acme-challenge/ {
-        root /var/www/letsencrypt;
-    }
-
     access_log /var/log/nginx/litehost-panel.log;
     error_log  /var/log/nginx/litehost-panel-error.log;
 }
@@ -277,24 +263,7 @@ for i in {1..15}; do
   sleep 1
 done
 
-# ── Step 15: Certbot auto-renew ──────────────────────────────
-hr; echo -e "${BOLD}Step 15: Setting up SSL auto-renewal${NC}"; hr
-
-apt-get install -y -qq cron
-systemctl enable cron
-systemctl start cron
-
-CRON_JOB="0 3 * * * certbot renew --quiet --webroot -w /var/www/letsencrypt && systemctl reload nginx"
-
-EXISTING_CRON=$(crontab -l 2>/dev/null || echo "")
-if echo "$EXISTING_CRON" | grep -qF "certbot renew"; then
-  log "Certbot cron already configured"
-else
-  { echo "$EXISTING_CRON"; echo "$CRON_JOB"; } | crontab -
-  log "Certbot cron renewal configured (daily at 03:00)"
-fi
-
-# ── Step 16: Firewall ────────────────────────────────────────
+# ── Step 15: Firewall ────────────────────────────────────────
 hr; echo -e "${BOLD}Step 16: Configuring UFW firewall${NC}"; hr
 
 ufw allow 22/tcp >/dev/null
