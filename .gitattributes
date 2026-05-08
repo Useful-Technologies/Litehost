@@ -1,0 +1,5 @@
+# Enforce LF line endings for shell scripts on all platforms
+* text=auto
+*.sh text eol=lf
+litehost text eol=lf
+install.sh text eol=lf
