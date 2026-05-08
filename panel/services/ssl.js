@@ -3,50 +3,56 @@ const { execSync } = require('child_process');
 
 const CERT_DIR = '/etc/hostctl/certs';
 
-function certPath(domain) { return `${CERT_DIR}/${domain}/cert.pem`; }
-function keyPath(domain)  { return `${CERT_DIR}/${domain}/key.pem`; }
+function certPath(id) { return `${CERT_DIR}/${id}/cert.pem`; }
+function keyPath(id)  { return `${CERT_DIR}/${id}/key.pem`; }
 
-function hasCertificate(domain) {
-  return fs.existsSync(certPath(domain)) && fs.existsSync(keyPath(domain));
+function hasCertificate(id) {
+  return fs.existsSync(certPath(id)) && fs.existsSync(keyPath(id));
 }
 
-function getCertExpiry(domain) {
+function parseCert(certPem) {
   try {
-    const result = execSync(
-      `openssl x509 -enddate -noout -in ${certPath(domain)}`,
-      { stdio: 'pipe' }
-    ).toString().trim();
-    const match = result.match(/notAfter=(.+)/);
-    return match ? new Date(match[1]) : null;
-  } catch {
-    return null;
-  }
+    const out = execSync('openssl x509 -noout -subject -enddate', {
+      input: certPem, stdio: ['pipe', 'pipe', 'pipe'],
+    }).toString();
+    const cn      = out.match(/CN\s*=\s*([^,\n/]+)/);
+    const expires = out.match(/notAfter=(.+)/);
+    return {
+      commonName: cn      ? cn[1].trim()                    : null,
+      expiresAt:  expires ? new Date(expires[1]).toISOString() : null,
+    };
+  } catch { return { commonName: null, expiresAt: null }; }
 }
 
 function wrapKey(key) {
-  const trimmed = key.trim();
-  if (trimmed.startsWith('-----')) return trimmed + '\n';
-  return `-----BEGIN PRIVATE KEY-----\n${trimmed}\n-----END PRIVATE KEY-----\n`;
+  const t = key.trim();
+  if (t.startsWith('-----')) return t + '\n';
+  return `-----BEGIN PRIVATE KEY-----\n${t}\n-----END PRIVATE KEY-----\n`;
 }
 
-function installCert(domain, cert, key) {
-  const dir = `${CERT_DIR}/${domain}`;
+function installCert(id, cert, key) {
+  const dir = `${CERT_DIR}/${id}`;
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(certPath(domain), cert.trim() + '\n', { mode: 0o600 });
-  fs.writeFileSync(keyPath(domain),  wrapKey(key),        { mode: 0o600 });
+  fs.writeFileSync(certPath(id), cert.trim() + '\n', { mode: 0o600 });
+  fs.writeFileSync(keyPath(id),  wrapKey(key),        { mode: 0o600 });
 }
 
-function getSSLStatus(domain) {
-  if (!domain) return { status: 'none', message: 'No domain set' };
-  if (!hasCertificate(domain)) return { status: 'none', message: 'No certificate installed' };
-
-  const expiry = getCertExpiry(domain);
-  const now = new Date();
-  const daysLeft = expiry ? Math.floor((expiry - now) / 86400000) : 0;
-
-  if (daysLeft < 0) return { status: 'expired', message: 'Certificate expired', expiry };
-  if (daysLeft < 14) return { status: 'expiring', message: `Expires in ${daysLeft} days`, expiry, daysLeft };
-  return { status: 'active', message: `Valid for ${daysLeft} days`, expiry, daysLeft };
+function removeCert(id) {
+  try { fs.rmSync(`${CERT_DIR}/${id}`, { recursive: true, force: true }); } catch {}
 }
 
-module.exports = { hasCertificate, installCert, getSSLStatus };
+function getSSLStatus(certId) {
+  if (!certId) return { status: 'none', message: 'No certificate linked' };
+  if (!hasCertificate(certId)) return { status: 'none', message: 'Certificate files missing' };
+  try {
+    const out = execSync(`openssl x509 -enddate -noout -in ${certPath(certId)}`, { stdio: 'pipe' }).toString();
+    const match = out.match(/notAfter=(.+)/);
+    const expiry = match ? new Date(match[1]) : null;
+    const daysLeft = expiry ? Math.floor((expiry - new Date()) / 86400000) : 0;
+    if (daysLeft < 0)  return { status: 'expired',  message: 'Certificate expired',          expiry, daysLeft };
+    if (daysLeft < 14) return { status: 'expiring', message: `Expires in ${daysLeft} days`,  expiry, daysLeft };
+    return                    { status: 'active',   message: `Valid for ${daysLeft} days`,   expiry, daysLeft };
+  } catch { return { status: 'none', message: 'Could not read certificate' }; }
+}
+
+module.exports = { hasCertificate, installCert, removeCert, parseCert, getSSLStatus, certPath, keyPath };

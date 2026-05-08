@@ -4,7 +4,7 @@ let currentView = 'dashboard';
 let currentSite = null;
 let currentSiteTab = 'overview';
 let editorState = { siteId: null, path: null };
-let sslTargetSiteId = null;
+let availableCerts = []; // cached cert list for dropdowns
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
@@ -46,6 +46,7 @@ function navigate(view, siteId) {
     case 'dashboard': renderDashboard(); break;
     case 'sites':     renderSitesList(); break;
     case 'site':      renderSite(siteId); break;
+    case 'certs':     renderCerts(); break;
     case 'users':     renderUsers(); break;
   }
 }
@@ -128,8 +129,12 @@ function sitesTable(sites) {
 async function renderSite(siteId) {
   setPage('Loading…', '');
   try {
-    const site = await api.get(`/sites/${siteId}`);
+    const [site, certs] = await Promise.all([
+      api.get(`/sites/${siteId}`),
+      currentUser.role === 'owner' ? api.get('/certs').catch(() => []) : Promise.resolve([]),
+    ]);
     currentSite = site;
+    availableCerts = certs;
     setPage(
       `<span style="cursor:pointer;color:var(--muted)" onclick="navigate('sites')">Sites</span> / ${site.name}`,
       `<a href="/preview/${site.name}" target="_blank" class="btn btn-sm btn-secondary">👁 Preview</a>`
@@ -161,8 +166,11 @@ function renderSiteContent() {
   if (currentSiteTab === 'files') loadFiles(site.id, '');
 }
 
-function switchSiteTab(tab) {
+async function switchSiteTab(tab) {
   currentSiteTab = tab;
+  if (tab === 'settings' && currentUser.role === 'owner') {
+    availableCerts = await api.get('/certs').catch(() => []);
+  }
   renderSiteContent();
 }
 
@@ -222,13 +230,15 @@ function siteOverviewTab(site) {
       ${site.start_command ? `<div style="margin-top:10px;font-size:0.8rem;color:var(--muted)">Command: <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${site.start_command.replace('{PORT}', site.port)}</code></div>` : ''}
     </div>` : ''}
 
-    ${site.domain && ssl.status === 'none' ? `
-    <div class="card" style="border-color:var(--yellow)33">
+    ${currentUser.role === 'owner' && site.domain ? `
+    <div class="card" ${ssl.status === 'none' || ssl.status === 'expired' ? 'style="border-color:var(--yellow)33"' : ''}>
       <div class="card-header">
-        <span class="card-title">🔒 Issue SSL Certificate</span>
-        <button class="btn btn-sm btn-primary" onclick="openSSLModal(${site.id})">Install SSL</button>
+        <span class="card-title">🔒 SSL Certificate</span>
+        <button class="btn btn-sm btn-secondary" onclick="switchSiteTab('settings')">Manage</button>
       </div>
-      <p style="font-size:0.85rem;color:var(--muted)">Paste your certificate and private key to enable HTTPS.</p>
+      ${ssl.status !== 'none'
+        ? `<p style="font-size:0.85rem;color:var(--muted)">${ssl.message || ''}</p>`
+        : `<p style="font-size:0.85rem;color:var(--muted)">No certificate linked. Create one on the <a href="#" onclick="navigate('certs');return false">Certificates</a> page, then link it here in <a href="#" onclick="switchSiteTab('settings');return false">Settings</a>.</p>`}
     </div>` : ''}
 
     ${site.git_repo ? `
@@ -346,6 +356,24 @@ function siteSettingsTab(site) {
         <button class="btn btn-primary" onclick="saveGitSettings(${site.id})">Save Git Settings</button>
       </div>
     </div>
+
+    ${currentUser.role === 'owner' && site.domain ? `
+    <div class="card">
+      <div class="card-header"><span class="card-title">🔒 SSL Certificate</span></div>
+      <div class="form-row single">
+        <div class="form-group">
+          <label>Linked Certificate</label>
+          <select id="settingCertId">
+            <option value="">— None —</option>
+            ${availableCerts.map(c => `<option value="${c.id}" ${site.cert_id == c.id ? 'selected' : ''}>${c.name}${c.common_name ? ` (${c.common_name})` : ''}</option>`).join('')}
+          </select>
+          <div class="form-hint">Select a certificate to enable HTTPS. <a href="#" onclick="navigate('certs');return false">Manage certificates →</a></div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="btn btn-primary" onclick="saveSiteCert(${site.id})">Save SSL Settings</button>
+      </div>
+    </div>` : ''}
   `;
 }
 
@@ -663,21 +691,73 @@ async function gitDeploy(siteId) {
   }
 }
 
-// ─── SSL ──────────────────────────────────────────────────────────────────────
-function openSSLModal(siteId) {
-  sslTargetSiteId = siteId;
-  openModal('sslModal');
+// ─── Certificates ─────────────────────────────────────────────────────────────
+async function renderCerts() {
+  if (currentUser.role !== 'owner') { navigate('dashboard'); return; }
+  setPage('SSL Certificates', `<button class="btn btn-primary" onclick="openModal('createCertModal')">+ Add Certificate</button>`);
+
+  const certs = await api.get('/certs').catch(() => []);
+  availableCerts = certs;
+
+  setContent(`
+    <div class="card">
+      <div class="card-header"><span class="card-title">Certificates</span></div>
+      ${!certs.length ? '<p style="color:var(--muted);padding:16px;text-align:center">No certificates yet — add one to enable HTTPS on your sites.</p>' : `
+      <div class="table-wrap">
+        <table>
+          <thead><tr>
+            <th>Name</th><th>Common Name</th><th>Status</th><th>Expires</th><th>Linked Sites</th><th>Actions</th>
+          </tr></thead>
+          <tbody>
+            ${certs.map(c => `
+              <tr>
+                <td><strong>${c.name}</strong></td>
+                <td style="color:var(--muted);font-size:0.85rem">${c.common_name || '—'}</td>
+                <td>${sslBadge(c.status)}</td>
+                <td style="font-size:0.82rem;color:var(--muted)">${c.expiry ? formatDateShort(c.expiry) : '—'}</td>
+                <td style="font-size:0.82rem">${(c.linked_sites || []).map(s => `<a href="#" onclick="navigate('site',${s.id});return false">${s.name}</a>`).join(', ') || '<span style="color:var(--muted)">None</span>'}</td>
+                <td>
+                  <button class="btn btn-sm btn-danger" onclick="deleteCert(${c.id}, '${c.name}')">Delete</button>
+                </td>
+              </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`}
+    </div>
+  `);
 }
 
-async function issueSSL() {
-  const cert = document.getElementById('sslCert').value.trim();
-  const key  = document.getElementById('sslKey').value.trim();
-  if (!cert || !key) return toast.error('Certificate and private key are required');
+async function createCert() {
+  const name = document.getElementById('newCertName').value.trim();
+  const cert = document.getElementById('newCertPem').value.trim();
+  const key  = document.getElementById('newCertKey').value.trim();
+  if (!name || !cert || !key) return toast.error('Name, certificate, and private key are required');
   try {
-    await api.post(`/sites/${sslTargetSiteId}/ssl`, { cert, key });
-    toast.success('SSL certificate installed successfully');
-    closeModal('sslModal');
-    renderSite(sslTargetSiteId);
+    await api.post('/certs', { name, cert, key });
+    toast.success(`Certificate "${name}" added`);
+    closeModal('createCertModal');
+    document.getElementById('newCertName').value = '';
+    document.getElementById('newCertPem').value = '';
+    document.getElementById('newCertKey').value = '';
+    renderCerts();
+  } catch (e) { toast.error(e.message); }
+}
+
+async function deleteCert(id, name) {
+  if (!confirm(`Delete certificate "${name}"? Any sites using it will lose HTTPS.`)) return;
+  try {
+    await api.delete(`/certs/${id}`);
+    toast.success(`Certificate "${name}" deleted`);
+    renderCerts();
+  } catch (e) { toast.error(e.message); }
+}
+
+async function saveSiteCert(siteId) {
+  const cert_id = document.getElementById('settingCertId')?.value || null;
+  try {
+    const updated = await api.patch(`/sites/${siteId}`, { cert_id: cert_id ? parseInt(cert_id) : null });
+    currentSite = { ...currentSite, ...updated };
+    toast.success('SSL settings saved');
   } catch (e) { toast.error(e.message); }
 }
 

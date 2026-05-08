@@ -5,8 +5,8 @@ const { execSync } = require('child_process');
 const db = require('../db/database');
 const { requireAuth, requireOwner, requireSitePermission } = require('../middleware/auth');
 const nginx = require('../services/nginx');
-const ssl = require('../services/ssl');
-const dns = require('../services/dns');
+const ssl   = require('../services/ssl');
+const dns   = require('../services/dns');
 const pm = require('../services/process-manager');
 
 const router = express.Router();
@@ -108,7 +108,7 @@ router.get('/:id', requireAuth, (req, res) => {
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
   const dnsStatus = site.domain ? dns.checkDNS(site.domain) : null;
-  const sslStatus = ssl.getSSLStatus(site.domain);
+  const sslStatus = ssl.getSSLStatus(site.cert_id);
 
   res.json({ ...site, dns: dnsStatus, ssl: sslStatus });
 });
@@ -118,11 +118,17 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars, git_repo, git_branch } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id } = req.body;
 
   if (start_command && !start_command.includes('{PORT}') &&
       (site.runtime === 'custom' || site.runtime === 'node')) {
     return res.status(400).json({ error: 'start_command must contain {PORT}' });
+  }
+
+  // Validate cert_id if provided
+  if (cert_id !== undefined && cert_id !== null) {
+    const certRow = require('../db/database').prepare('SELECT id FROM certificates WHERE id = ?').get(cert_id);
+    if (!certRow) return res.status(400).json({ error: 'Certificate not found' });
   }
 
   db.prepare(`
@@ -132,12 +138,14 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       php_version = COALESCE(?, php_version),
       env_vars = COALESCE(?, env_vars),
       git_repo = ?,
-      git_branch = COALESCE(?, git_branch)
+      git_branch = COALESCE(?, git_branch),
+      cert_id = ?
     WHERE id = ?
   `).run(
     domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
     git_repo !== undefined ? (git_repo || null) : site.git_repo,
     git_branch || null,
+    cert_id !== undefined ? (cert_id || null) : site.cert_id,
     site.id
   );
 
@@ -231,25 +239,6 @@ router.get('/:id/logs', requireAuth, requireSitePermission('view'), (req, res) =
   if (!allLines.length) return res.json({ lines: [] });
 
   res.json({ lines: allLines.slice(-lines) });
-});
-
-// Install SSL certificate
-router.post('/:id/ssl', requireAuth, requireSitePermission('settings'), (req, res) => {
-  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
-  if (!site) return res.status(404).json({ error: 'Site not found' });
-  if (!site.domain) return res.status(400).json({ error: 'No domain set' });
-
-  const { cert, key } = req.body;
-  if (!cert || !key) return res.status(400).json({ error: 'Certificate and private key are required' });
-
-  try {
-    ssl.installCert(site.domain, cert, key);
-    nginx.writeSiteConfig(site, true);
-    nginx.reloadNginx();
-    res.json({ success: true, message: `SSL certificate installed for ${site.domain}` });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
 });
 
 // Git deploy

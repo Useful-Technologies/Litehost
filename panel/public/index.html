@@ -23,6 +23,9 @@
         <span class="icon">🌐</span><span>Sites</span>
       </button>
       <div class="nav-section owner-only">Management</div>
+      <button class="nav-item owner-only" data-view="certs">
+        <span class="icon">🔒</span><span>Certificates</span>
+      </button>
       <button class="nav-item owner-only" data-view="users">
         <span class="icon">👥</span><span>Users</span>
       </button>
@@ -158,31 +161,37 @@
   </div>
 </div>
 
-<!-- SSL Modal -->
-<div class="modal-overlay" id="sslModal">
-  <div class="modal">
+<!-- Create Certificate Modal -->
+<div class="modal-overlay" id="createCertModal">
+  <div class="modal" style="max-width:600px">
     <div class="modal-header">
-      <span class="modal-title">Install SSL Certificate</span>
+      <span class="modal-title">Add SSL Certificate</span>
       <button class="modal-close">✕</button>
     </div>
     <p style="color:var(--muted);font-size:0.875rem;margin-bottom:16px">
-      Paste your certificate and private key below. The certificate should include the full chain if applicable.
+      Paste your certificate and private key. The certificate should include the full chain if applicable.
     </p>
     <div class="form-row single">
       <div class="form-group">
+        <label>Certificate Name *</label>
+        <input type="text" id="newCertName" placeholder="e.g. example.com wildcard" />
+      </div>
+    </div>
+    <div class="form-row single">
+      <div class="form-group">
         <label>Certificate (PEM) *</label>
-        <textarea id="sslCert" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="font-family:monospace;font-size:0.8rem"></textarea>
+        <textarea id="newCertPem" rows="6" placeholder="-----BEGIN CERTIFICATE-----&#10;...&#10;-----END CERTIFICATE-----" style="font-family:monospace;font-size:0.8rem"></textarea>
       </div>
     </div>
     <div class="form-row single">
       <div class="form-group">
         <label>Private Key (PEM) *</label>
-        <textarea id="sslKey" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----" style="font-family:monospace;font-size:0.8rem"></textarea>
+        <textarea id="newCertKey" rows="6" placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----" style="font-family:monospace;font-size:0.8rem"></textarea>
       </div>
     </div>
     <div class="modal-footer">
-      <button class="btn btn-secondary" onclick="closeModal('sslModal')">Cancel</button>
-      <button class="btn btn-primary" onclick="issueSSL()">Install Certificate</button>
+      <button class="btn btn-secondary" onclick="closeModal('createCertModal')">Cancel</button>
+      <button class="btn btn-primary" onclick="createCert()">Add Certificate</button>
     </div>
   </div>
 </div>
