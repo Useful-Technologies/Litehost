@@ -41,6 +41,11 @@ function parseEnv(jsonStr) {
   try { return JSON.parse(jsonStr || '{}'); } catch { return {}; }
 }
 
+function logLine(fd, msg) {
+  const ts = new Date().toISOString();
+  fs.writeSync(fd, `[${ts}] ${msg}\n`);
+}
+
 function startSite(site) {
   const siteDir = `/opt/hosted-sites/${site.name}`;
   const logFile = `/var/log/hostctl/${site.name}.log`;
@@ -49,25 +54,30 @@ function startSite(site) {
   fs.mkdirSync(siteDir, { recursive: true });
 
   const cmd = buildCommand(site);
-  const logStream = fs.createWriteStream(logFile, { flags: 'a' });
+
+  // Use a synchronous fd so it's ready before spawn — prevents early stderr being lost
+  const fd = fs.openSync(logFile, 'a');
+  logLine(fd, `[START] ${cmd}`);
 
   const parts = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
   const proc = spawn(parts[0], parts.slice(1), {
     cwd: siteDir,
     env: { ...process.env, ...parseEnv(site.env_vars), PORT: String(site.port) },
     detached: false,
-    stdio: ['ignore', logStream, logStream],
+    stdio: ['ignore', fd, fd],
   });
 
   proc.on('error', (err) => {
-    logStream.write(`[ERROR] ${err.message}\n`);
+    logLine(fd, `[ERROR] ${err.message}`);
+    try { fs.closeSync(fd); } catch {}
     db.prepare("UPDATE sites SET status = 'error' WHERE id = ?").run(site.id);
     processes.delete(site.id);
   });
 
   proc.on('exit', (code, signal) => {
     const reason = signal ? `signal ${signal}` : `code ${code}`;
-    logStream.write(`[EXIT] Process exited with ${reason}\n`);
+    logLine(fd, `[EXIT] Process exited with ${reason}`);
+    try { fs.closeSync(fd); } catch {}
     db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
     processes.delete(site.id);
   });

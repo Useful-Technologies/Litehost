@@ -212,13 +212,26 @@ router.get('/:id/logs', requireAuth, requireSitePermission('view'), (req, res) =
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const logPath = `${LOG_DIR}/${site.name}.log`;
   const lines = parseInt(req.query.lines) || 100;
 
-  if (!fs.existsSync(logPath)) return res.json({ lines: [] });
+  // Collect all relevant log files for this site
+  const logPaths = [
+    `${LOG_DIR}/${site.name}.log`,         // node/custom process output
+    `${LOG_DIR}/${site.name}-error.log`,   // nginx error log (static/php)
+    `${LOG_DIR}/${site.name}-access.log`,  // nginx access log
+  ];
 
-  const content = fs.readFileSync(logPath, 'utf8');
-  const allLines = content.split('\n').filter(Boolean);
+  const allLines = [];
+  for (const p of logPaths) {
+    if (!fs.existsSync(p)) continue;
+    try {
+      const content = fs.readFileSync(p, 'utf8');
+      allLines.push(...content.split('\n').filter(Boolean));
+    } catch {}
+  }
+
+  if (!allLines.length) return res.json({ lines: [] });
+
   res.json({ lines: allLines.slice(-lines) });
 });
 
