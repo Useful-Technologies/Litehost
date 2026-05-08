@@ -59,10 +59,17 @@ function startSite(site) {
   const fd = fs.openSync(logFile, 'a');
   logLine(fd, `[START] ${cmd}`);
 
-  const parts = cmd.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) || [];
-  const proc = spawn(parts[0], parts.slice(1), {
+  const siteEnv = {
+    PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
+    HOME: siteDir,
+    USER: 'litehost',
+    ...parseEnv(site.env_vars),
+    PORT: String(site.port),
+  };
+
+  const proc = spawn('/bin/sh', ['-c', cmd], {
     cwd: siteDir,
-    env: { ...process.env, ...parseEnv(site.env_vars), PORT: String(site.port) },
+    env: siteEnv,
     detached: false,
     stdio: ['ignore', fd, fd],
   });
