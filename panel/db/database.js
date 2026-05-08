@@ -31,6 +31,9 @@ db.exec(`
     php_version TEXT DEFAULT '8.1',
     node_version TEXT DEFAULT '20',
     env_vars TEXT DEFAULT '{}',
+    git_repo TEXT,
+    git_branch TEXT DEFAULT 'main',
+    deploy_command TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -53,5 +56,11 @@ db.exec(`
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 `);
+
+// Migrate existing databases
+for (const col of ['git_repo', 'git_branch', 'deploy_command']) {
+  try { db.exec(`ALTER TABLE sites ADD COLUMN ${col} TEXT`); } catch {}
+}
+try { db.exec(`UPDATE sites SET git_branch = 'main' WHERE git_branch IS NULL`); } catch {}
 
 module.exports = db;

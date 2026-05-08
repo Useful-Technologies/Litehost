@@ -231,6 +231,29 @@ function siteOverviewTab(site) {
       <p style="font-size:0.85rem;color:var(--muted)">Paste your certificate and private key to enable HTTPS.</p>
     </div>` : ''}
 
+    ${site.git_repo ? `
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">🔗 Git Deploy</span>
+        <button class="btn btn-sm btn-primary" onclick="gitDeploy(${site.id})">↓ Pull & Deploy</button>
+      </div>
+      <table style="width:100%">
+        <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Repository</td><td style="font-size:0.82rem"><code>${site.git_repo}</code></td></tr>
+        <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Branch</td><td style="font-size:0.82rem"><code>${site.git_branch || 'main'}</code></td></tr>
+        ${site.deploy_command ? `<tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Run after pull</td><td style="font-size:0.82rem"><code>${site.deploy_command}</code></td></tr>` : ''}
+      </table>
+      <div id="gitDeployLog" style="display:none;margin-top:12px">
+        <div class="logs-box" id="gitDeployOutput" style="max-height:200px"></div>
+      </div>
+    </div>` : `
+    <div class="card" style="border-color:var(--border)">
+      <div class="card-header">
+        <span class="card-title">🔗 Git Deploy</span>
+        <button class="btn btn-sm btn-secondary" onclick="switchSiteTab('settings')">Configure</button>
+      </div>
+      <p style="font-size:0.85rem;color:var(--muted)">Link a Git repository to enable one-click pull & deploy. Set it up in the Settings tab.</p>
+    </div>`}
+
     <div class="card">
       <div class="card-header"><span class="card-title">Site Info</span></div>
       <table style="width:100%">
@@ -305,6 +328,29 @@ function siteSettingsTab(site) {
       <div style="display:flex;gap:10px;margin-top:8px">
         <button class="btn btn-primary" onclick="saveSiteSettings(${site.id})">Save Settings</button>
         ${currentUser.role === 'owner' ? `<button class="btn btn-danger" onclick="deleteSite(${site.id}, '${site.name}')">Delete Site</button>` : ''}
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header"><span class="card-title">🔗 Git Repository</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Repository URL</label>
+          <input type="text" id="settingGitRepo" value="${site.git_repo || ''}" placeholder="https://github.com/user/repo.git" />
+        </div>
+        <div class="form-group">
+          <label>Branch</label>
+          <input type="text" id="settingGitBranch" value="${site.git_branch || 'main'}" placeholder="main" />
+        </div>
+      </div>
+      <div class="form-row single">
+        <div class="form-group">
+          <label>Deploy Command <span style="color:var(--muted);font-size:0.8rem">(runs after pull)</span></label>
+          <input type="text" id="settingDeployCmd" value="${site.deploy_command || ''}" placeholder="npm install && npm run build" />
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="btn btn-primary" onclick="saveGitSettings(${site.id})">Save Git Settings</button>
       </div>
     </div>
   `;
@@ -596,6 +642,32 @@ async function togglePerm(userId, siteId, perm, checked) {
   } catch (e) {
     row?.classList.toggle('selected', !checked); // revert
     toast.error(e.message);
+  }
+}
+
+// ─── Git ──────────────────────────────────────────────────────────────────────
+async function saveGitSettings(siteId) {
+  const git_repo = document.getElementById('settingGitRepo')?.value.trim();
+  const git_branch = document.getElementById('settingGitBranch')?.value.trim() || 'main';
+  const deploy_command = document.getElementById('settingDeployCmd')?.value.trim();
+  try {
+    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch, deploy_command: deploy_command || null });
+    currentSite = { ...currentSite, ...updated };
+    toast.success('Git settings saved');
+  } catch (e) { toast.error(e.message); }
+}
+
+async function gitDeploy(siteId) {
+  const logEl = document.getElementById('gitDeployLog');
+  const outEl = document.getElementById('gitDeployOutput');
+  if (logEl) { logEl.style.display = ''; outEl.textContent = 'Deploying…'; }
+  try {
+    const data = await api.post(`/sites/${siteId}/git/deploy`);
+    if (outEl) outEl.textContent = data.log || 'Done.';
+    toast.success('Deployed successfully');
+  } catch (e) {
+    if (outEl) outEl.textContent = e.log || e.message;
+    toast.error('Deploy failed');
   }
 }
 

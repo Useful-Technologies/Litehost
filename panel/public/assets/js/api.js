@@ -9,7 +9,7 @@ const api = {
     const res = await fetch('/api' + path, opts);
     if (res.status === 401) { window.location.href = '/login'; return; }
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+    if (!res.ok) { const err = new Error(data.error || `HTTP ${res.status}`); if (data.log) err.log = data.log; throw err; }
     return data;
   },
   get: (path) => api._request('GET', path),

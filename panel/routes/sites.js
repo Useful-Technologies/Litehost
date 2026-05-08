@@ -1,6 +1,7 @@
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
+const { execSync } = require('child_process');
 const db = require('../db/database');
 const { requireAuth, requireOwner, requireSitePermission } = require('../middleware/auth');
 const nginx = require('../services/nginx');
@@ -117,7 +118,7 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch, deploy_command } = req.body;
 
   if (start_command && !start_command.includes('{PORT}') &&
       (site.runtime === 'custom' || site.runtime === 'node')) {
@@ -129,9 +130,18 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       domain = COALESCE(?, domain),
       start_command = COALESCE(?, start_command),
       php_version = COALESCE(?, php_version),
-      env_vars = COALESCE(?, env_vars)
+      env_vars = COALESCE(?, env_vars),
+      git_repo = ?,
+      git_branch = COALESCE(?, git_branch),
+      deploy_command = ?
     WHERE id = ?
-  `).run(domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null, site.id);
+  `).run(
+    domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
+    git_repo !== undefined ? (git_repo || null) : site.git_repo,
+    git_branch || null,
+    deploy_command !== undefined ? (deploy_command || null) : site.deploy_command,
+    site.id
+  );
 
   const updated = db.prepare('SELECT * FROM sites WHERE id = ?').get(site.id);
   fs.writeFileSync(`${CONF_DIR}/${site.name}.json`, JSON.stringify(updated, null, 2));
@@ -228,6 +238,44 @@ router.post('/:id/ssl', requireAuth, requireSitePermission('settings'), (req, re
     res.json({ success: true, message: `SSL certificate installed for ${site.domain}` });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// Git deploy
+router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), (req, res) => {
+  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
+  if (!site) return res.status(404).json({ error: 'Site not found' });
+  if (!site.git_repo) return res.status(400).json({ error: 'No git repository configured' });
+
+  const siteDir = `${SITES_DIR}/${site.name}`;
+  const branch = site.git_branch || 'main';
+  const log = [];
+
+  try {
+    const gitDir = path.join(siteDir, '.git');
+    if (fs.existsSync(gitDir)) {
+      log.push(`$ git -C ${siteDir} pull origin ${branch}`);
+      const out = execSync(`git -C ${siteDir} pull origin ${branch} 2>&1`, { timeout: 60000 }).toString();
+      log.push(out.trim());
+    } else {
+      fs.mkdirSync(siteDir, { recursive: true });
+      log.push(`$ git clone --branch ${branch} ${site.git_repo} ${siteDir}`);
+      const out = execSync(`git clone --branch ${branch} ${site.git_repo} ${siteDir} 2>&1`, { timeout: 120000 }).toString();
+      log.push(out.trim());
+    }
+
+    if (site.deploy_command) {
+      log.push(`$ ${site.deploy_command}`);
+      const out = execSync(site.deploy_command, { cwd: siteDir, timeout: 300000 }).toString();
+      log.push(out.trim());
+    }
+
+    db.prepare("INSERT INTO activity_log (user_id, site_id, action, detail) VALUES (?, ?, 'git_deploy', ?)").run(req.user.id, site.id, log.join('\n'));
+    res.json({ success: true, log: log.join('\n') });
+  } catch (e) {
+    const errMsg = e.stdout ? e.stdout.toString() : e.message;
+    log.push(`Error: ${errMsg}`);
+    res.status(500).json({ error: errMsg, log: log.join('\n') });
   }
 });
 
