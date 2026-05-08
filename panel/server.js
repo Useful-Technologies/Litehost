@@ -55,6 +55,7 @@ app.use('/api/auth', require('./routes/auth'));
 app.use('/api/sites', require('./routes/sites'));
 app.use('/api/sites/:siteId/files', require('./routes/files'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/certs', require('./routes/certs'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.0' }));
 

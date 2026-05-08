@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const ssl = require('./ssl');
 
 const SITES_AVAILABLE = '/etc/nginx/sites-available';
 const SITES_ENABLED = '/etc/nginx/sites-enabled';
@@ -13,21 +14,21 @@ function siteEnabledPath(name) {
   return path.join(SITES_ENABLED, `litehost-${name}.conf`);
 }
 
-function sslBlock(domain) {
+function sslBlock(certId) {
   return `
-    ssl_certificate     /etc/hostctl/certs/${domain}/cert.pem;
-    ssl_certificate_key /etc/hostctl/certs/${domain}/key.pem;
+    ssl_certificate     /etc/hostctl/certs/${certId}/cert.pem;
+    ssl_certificate_key /etc/hostctl/certs/${certId}/key.pem;
     ssl_protocols       TLSv1.2 TLSv1.3;
     ssl_ciphers         HIGH:!aNULL:!MD5;
     ssl_session_cache   shared:SSL:10m;
     ssl_session_timeout 10m;`;
 }
 
-function staticConfig(site, withSSL) {
+function staticConfig(site, certId) {
   const root = `/opt/hosted-sites/${site.name}`;
   const serverName = site.domain;
-  const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
-  const redirect = withSSL ? `
+  const listenLine = certId ? 'listen 443 ssl http2;' : 'listen 80;';
+  const redirect = certId ? `
 server {
     listen 80;
     server_name ${serverName};
@@ -38,7 +39,7 @@ server {
   return `${redirect}server {
     ${listenLine}
     server_name ${serverName};
-${withSSL ? sslBlock(site.domain) : ''}
+${certId ? sslBlock(certId) : ''}
     root ${root};
     index index.html index.htm;
 
@@ -51,12 +52,12 @@ ${withSSL ? sslBlock(site.domain) : ''}
 }`.trim();
 }
 
-function phpConfig(site, withSSL) {
+function phpConfig(site, certId) {
   const root = `/opt/hosted-sites/${site.name}`;
   const serverName = site.domain;
   const phpVer = site.php_version || '8.1';
-  const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
-  const redirect = withSSL ? `
+  const listenLine = certId ? 'listen 443 ssl http2;' : 'listen 80;';
+  const redirect = certId ? `
 server {
     listen 80;
     server_name ${serverName};
@@ -67,7 +68,7 @@ server {
   return `${redirect}server {
     ${listenLine}
     server_name ${serverName};
-${withSSL ? sslBlock(site.domain) : ''}
+${certId ? sslBlock(certId) : ''}
     root ${root};
     index index.php index.html;
 
@@ -87,10 +88,10 @@ ${withSSL ? sslBlock(site.domain) : ''}
 }`.trim();
 }
 
-function proxyConfig(site, withSSL) {
+function proxyConfig(site, certId) {
   const serverName = site.domain;
-  const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
-  const redirect = withSSL ? `
+  const listenLine = certId ? 'listen 443 ssl http2;' : 'listen 80;';
+  const redirect = certId ? `
 server {
     listen 80;
     server_name ${serverName};
@@ -101,7 +102,7 @@ server {
   return `${redirect}server {
     ${listenLine}
     server_name ${serverName};
-${withSSL ? sslBlock(site.domain) : ''}
+${certId ? sslBlock(certId) : ''}
     location / {
         proxy_pass http://127.0.0.1:${site.port};
         proxy_http_version 1.1;
@@ -119,17 +120,24 @@ ${withSSL ? sslBlock(site.domain) : ''}
 }`.trim();
 }
 
-function generateConfig(site, withSSL = false) {
+// Derive certId from site — only use cert if the files actually exist on disk
+function resolveCertId(site) {
+  if (!site.cert_id) return null;
+  return ssl.hasCertificate(site.cert_id) ? site.cert_id : null;
+}
+
+function generateConfig(site) {
+  const certId = resolveCertId(site);
   switch (site.runtime) {
-    case 'static': return staticConfig(site, withSSL);
-    case 'php':    return phpConfig(site, withSSL);
+    case 'static': return staticConfig(site, certId);
+    case 'php':    return phpConfig(site, certId);
     case 'node':
-    case 'custom': return proxyConfig(site, withSSL);
-    default:       return staticConfig(site, withSSL);
+    case 'custom': return proxyConfig(site, certId);
+    default:       return staticConfig(site, certId);
   }
 }
 
-function writeSiteConfig(site, withSSL = false) {
+function writeSiteConfig(site) {
   // Sites with no domain can't be routed — skip nginx entirely
   if (!site.domain) return;
 
@@ -137,7 +145,7 @@ function writeSiteConfig(site, withSSL = false) {
   fs.mkdirSync(SITES_ENABLED, { recursive: true });
   fs.mkdirSync('/var/log/hostctl', { recursive: true });
 
-  const conf = generateConfig(site, withSSL);
+  const conf = generateConfig(site);
   fs.writeFileSync(siteConfPath(site.name), conf, 'utf8');
 
   // Always recreate the symlink — a stale pointer silently serves the wrong site
@@ -163,10 +171,10 @@ function reloadNginx() {
   }
 }
 
-// Called when SSL cert is ready — regenerate config with SSL blocks
+// Called after a cert is linked to a site — writeSiteConfig now reads cert_id automatically
 function enableHTTPS(site) {
   if (!site.domain) return false;
-  writeSiteConfig(site, true);
+  writeSiteConfig(site);
   return true;
 }
 
