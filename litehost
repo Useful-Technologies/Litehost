@@ -30,21 +30,33 @@ case "${1:-}" in
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
 
-    git clone --depth=1 "$REPO" "$TMP" > /dev/null 2>&1
+    echo "  → Cloning latest from GitHub..."
+    if ! git clone --depth=1 "$REPO" "$TMP"; then
+      echo "  ✗ Git clone failed. Check network connectivity and try again."
+      exit 1
+    fi
 
+    echo "  → Copying panel files..."
     cp -r "$TMP/panel/." "$PANEL_DIR/"
     chown -R litehost:litehost "$PANEL_DIR"
 
+    echo "  → Installing dependencies..."
     cd "$PANEL_DIR"
     npm install --omit=dev --quiet
     chown -R litehost:litehost "$PANEL_DIR/node_modules"
 
-    # Update the CLI itself
+    echo "  → Updating CLI..."
     cp "$TMP/litehost" /usr/local/bin/litehost
     chmod +x /usr/local/bin/litehost
 
+    echo "  → Restarting service..."
     systemctl restart litehost
-    echo "Done. Litehost is up to date."
+    sleep 1
+    if systemctl is-active --quiet litehost; then
+      echo "Done. Litehost is up to date and running."
+    else
+      echo "Warning: service restarted but may not be healthy — check: litehost logs"
+    fi
     ;;
   *)
     echo "Usage: litehost {start|stop|restart|status|logs|update}"
