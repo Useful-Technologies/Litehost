@@ -49,6 +49,14 @@ case "${1:-}" in
     cp "$TMP/litehost" /usr/local/bin/litehost
     chmod +x /usr/local/bin/litehost
 
+    echo "  → Applying nginx settings..."
+    echo 'server_names_hash_bucket_size 128;' > /etc/nginx/conf.d/litehost.conf
+    if nginx -t 2>/dev/null; then
+      systemctl reload nginx
+    else
+      echo "  ! nginx config test failed — skipping reload"
+    fi
+
     echo "  → Restarting service..."
     systemctl restart litehost
     sleep 1
