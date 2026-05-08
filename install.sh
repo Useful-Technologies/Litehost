@@ -178,6 +178,9 @@ hr; echo -e "${BOLD}Step 12: Configuring Nginx${NC}"; hr
 # Remove default nginx site
 rm -f /etc/nginx/sites-enabled/default
 
+# Increase server_names hash bucket so subdomains resolve correctly
+echo 'server_names_hash_bucket_size 128;' > /etc/nginx/conf.d/litehost.conf
+
 # Grant litehost user write access to nginx site config dirs
 chown -R "${LITEHOST_USER}:${LITEHOST_USER}" /etc/nginx/sites-available /etc/nginx/sites-enabled
 

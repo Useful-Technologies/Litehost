@@ -25,7 +25,7 @@ function sslBlock(domain) {
 
 function staticConfig(site, withSSL) {
   const root = `/opt/hosted-sites/${site.name}`;
-  const serverName = site.domain || '_';
+  const serverName = site.domain;
   const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
   const redirect = withSSL ? `
 server {
@@ -53,7 +53,7 @@ ${withSSL ? sslBlock(site.domain) : ''}
 
 function phpConfig(site, withSSL) {
   const root = `/opt/hosted-sites/${site.name}`;
-  const serverName = site.domain || '_';
+  const serverName = site.domain;
   const phpVer = site.php_version || '8.1';
   const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
   const redirect = withSSL ? `
@@ -88,7 +88,7 @@ ${withSSL ? sslBlock(site.domain) : ''}
 }
 
 function proxyConfig(site, withSSL) {
-  const serverName = site.domain || '_';
+  const serverName = site.domain;
   const listenLine = withSSL ? 'listen 443 ssl http2;' : 'listen 80;';
   const redirect = withSSL ? `
 server {
@@ -130,6 +130,9 @@ function generateConfig(site, withSSL = false) {
 }
 
 function writeSiteConfig(site, withSSL = false) {
+  // Sites with no domain can't be routed — skip nginx entirely
+  if (!site.domain) return;
+
   fs.mkdirSync(SITES_AVAILABLE, { recursive: true });
   fs.mkdirSync(SITES_ENABLED, { recursive: true });
   fs.mkdirSync('/var/log/hostctl', { recursive: true });
@@ -137,10 +140,10 @@ function writeSiteConfig(site, withSSL = false) {
   const conf = generateConfig(site, withSSL);
   fs.writeFileSync(siteConfPath(site.name), conf, 'utf8');
 
+  // Always recreate the symlink — a stale pointer silently serves the wrong site
   const enabled = siteEnabledPath(site.name);
-  if (!fs.existsSync(enabled)) {
-    fs.symlinkSync(siteConfPath(site.name), enabled);
-  }
+  try { fs.unlinkSync(enabled); } catch {}
+  fs.symlinkSync(siteConfPath(site.name), enabled);
 }
 
 function removeSiteConfig(name) {
