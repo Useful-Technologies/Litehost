@@ -264,15 +264,21 @@ router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), (re
 
   try {
     const gitDir = path.join(siteDir, '.git');
+    fs.mkdirSync(siteDir, { recursive: true });
+
     if (fs.existsSync(gitDir)) {
-      log.push(`$ git -C ${siteDir} pull origin ${branch}`);
+      log.push(`$ git pull origin ${branch}`);
       const out = execSync(`git -C ${siteDir} pull origin ${branch} 2>&1`, { timeout: 60000 }).toString();
       log.push(out.trim());
     } else {
-      fs.mkdirSync(siteDir, { recursive: true });
-      log.push(`$ git clone --branch ${branch} ${site.git_repo} ${siteDir}`);
-      const out = execSync(`git clone --branch ${branch} ${site.git_repo} ${siteDir} 2>&1`, { timeout: 120000 }).toString();
-      log.push(out.trim());
+      // Directory already exists (Litehost creates it on site creation) — init in-place
+      log.push(`$ git init && git fetch origin ${branch} && git reset --hard`);
+      execSync(`git -C ${siteDir} init 2>&1`, { timeout: 10000 });
+      execSync(`git -C ${siteDir} remote add origin ${site.git_repo} 2>&1`, { timeout: 10000 });
+      const fetch = execSync(`git -C ${siteDir} fetch origin ${branch} 2>&1`, { timeout: 120000 }).toString();
+      log.push(fetch.trim());
+      const reset = execSync(`git -C ${siteDir} reset --hard origin/${branch} 2>&1`, { timeout: 30000 }).toString();
+      log.push(reset.trim());
     }
 
     // Restart the process (node/custom) or reload nginx (static/php)
