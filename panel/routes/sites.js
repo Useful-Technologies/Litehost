@@ -118,7 +118,7 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars, git_repo, git_branch, deploy_command } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch } = req.body;
 
   if (start_command && !start_command.includes('{PORT}') &&
       (site.runtime === 'custom' || site.runtime === 'node')) {
@@ -132,14 +132,12 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       php_version = COALESCE(?, php_version),
       env_vars = COALESCE(?, env_vars),
       git_repo = ?,
-      git_branch = COALESCE(?, git_branch),
-      deploy_command = ?
+      git_branch = COALESCE(?, git_branch)
     WHERE id = ?
   `).run(
     domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
     git_repo !== undefined ? (git_repo || null) : site.git_repo,
     git_branch || null,
-    deploy_command !== undefined ? (deploy_command || null) : site.deploy_command,
     site.id
   );
 
@@ -277,10 +275,14 @@ router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), (re
       log.push(out.trim());
     }
 
-    if (site.deploy_command) {
-      log.push(`$ ${site.deploy_command}`);
-      const out = execSync(site.deploy_command, { cwd: siteDir, timeout: 300000 }).toString();
-      log.push(out.trim());
+    // Restart the process (node/custom) or reload nginx (static/php)
+    if (['node', 'custom'].includes(site.runtime)) {
+      pm.stopSite(site.id);
+      const pid = pm.startSite(site);
+      log.push(`Restarted process (pid ${pid})`);
+    } else {
+      nginx.reloadNginx();
+      log.push('Nginx reloaded');
     }
 
     db.prepare("INSERT INTO activity_log (user_id, site_id, action, detail) VALUES (?, ?, 'git_deploy', ?)").run(req.user.id, site.id, log.join('\n'));

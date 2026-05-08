@@ -240,7 +240,6 @@ function siteOverviewTab(site) {
       <table style="width:100%">
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Repository</td><td style="font-size:0.82rem"><code>${site.git_repo}</code></td></tr>
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Branch</td><td style="font-size:0.82rem"><code>${site.git_branch || 'main'}</code></td></tr>
-        ${site.deploy_command ? `<tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Run after pull</td><td style="font-size:0.82rem"><code>${site.deploy_command}</code></td></tr>` : ''}
       </table>
       <div id="gitDeployLog" style="display:none;margin-top:12px">
         <div class="logs-box" id="gitDeployOutput" style="max-height:200px"></div>
@@ -341,12 +340,6 @@ function siteSettingsTab(site) {
         <div class="form-group">
           <label>Branch</label>
           <input type="text" id="settingGitBranch" value="${site.git_branch || 'main'}" placeholder="main" />
-        </div>
-      </div>
-      <div class="form-row single">
-        <div class="form-group">
-          <label>Deploy Command <span style="color:var(--muted);font-size:0.8rem">(runs after pull)</span></label>
-          <input type="text" id="settingDeployCmd" value="${site.deploy_command || ''}" placeholder="npm install && npm run build" />
         </div>
       </div>
       <div style="display:flex;gap:10px;margin-top:8px">
@@ -649,9 +642,8 @@ async function togglePerm(userId, siteId, perm, checked) {
 async function saveGitSettings(siteId) {
   const git_repo = document.getElementById('settingGitRepo')?.value.trim();
   const git_branch = document.getElementById('settingGitBranch')?.value.trim() || 'main';
-  const deploy_command = document.getElementById('settingDeployCmd')?.value.trim();
   try {
-    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch, deploy_command: deploy_command || null });
+    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch });
     currentSite = { ...currentSite, ...updated };
     toast.success('Git settings saved');
   } catch (e) { toast.error(e.message); }
