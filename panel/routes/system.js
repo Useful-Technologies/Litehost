@@ -42,8 +42,18 @@ router.get('/stats', requireAuth, async (req, res) => {
   }
 
   // ── Memory ─────────────────────────────────────────────────────────────────
+  // Read /proc/meminfo directly so we can use MemAvailable, which includes
+  // reclaimable page cache.  os.freemem() only returns MemFree (truly idle
+  // pages) — Linux fills spare RAM with file cache, so that number climbs
+  // indefinitely even when the system is healthy.  MemAvailable is what
+  // `free -h`, `htop`, and the kernel itself use for "memory you can use".
   const totalMem = os.totalmem();
-  const freeMem  = os.freemem();
+  let freeMem = os.freemem(); // fallback if /proc/meminfo is unavailable
+  try {
+    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
+    const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
+    if (match) freeMem = parseInt(match[1], 10) * 1024;
+  } catch {}
 
   // ── Disk (root partition) ──────────────────────────────────────────────────
   let disk = null;
