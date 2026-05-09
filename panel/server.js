@@ -7,7 +7,8 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 const db = require('./db/database');
-const pm = require('./services/process-manager');
+const pm    = require('./services/process-manager');
+const nginx = require('./services/nginx');
 
 const app = express();
 const PORT = process.env.PANEL_PORT || 3000;
@@ -102,6 +103,12 @@ function generatePassword() {
 
 async function boot() {
   await ensureOwner();
+  try {
+    nginx.writeDefaultConfig();
+    nginx.reloadNginx();
+  } catch (e) {
+    console.warn('[nginx] Could not write default config:', e.message);
+  }
   pm.recoverProcesses();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Litehost panel running on http://0.0.0.0:${PORT}`);

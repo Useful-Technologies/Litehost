@@ -178,4 +178,29 @@ function enableHTTPS(site) {
   return true;
 }
 
-module.exports = { writeSiteConfig, removeSiteConfig, reloadNginx, enableHTTPS, generateConfig };
+// Write /etc/nginx/conf.d/litehost.conf — the catch-all default_server that
+// forwards any unrecognised Host to the panel itself.  Called once on boot.
+function writeDefaultConfig() {
+  const panelPort = process.env.PANEL_PORT || 3000;
+  const conf = `# Managed by Litehost — do not edit manually
+server_names_hash_bucket_size 128;
+
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass         http://127.0.0.1:${panelPort};
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+    }
+}
+`;
+  fs.writeFileSync('/etc/nginx/conf.d/litehost.conf', conf, 'utf8');
+}
+
+module.exports = { writeSiteConfig, removeSiteConfig, reloadNginx, enableHTTPS, generateConfig, writeDefaultConfig };
