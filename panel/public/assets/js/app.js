@@ -245,11 +245,17 @@ function siteOverviewTab(site) {
     <div class="card">
       <div class="card-header">
         <span class="card-title">🔗 Git Deploy</span>
-        <button class="btn btn-sm btn-primary" onclick="gitDeploy(${site.id})">↓ Pull & Deploy</button>
+        <div style="display:flex;gap:8px;align-items:center">
+          ${site.git_auto_deploy
+            ? `<span style="font-size:0.75rem;background:var(--green)22;color:var(--green);border:1px solid var(--green)44;padding:2px 8px;border-radius:10px">● Auto</span>`
+            : ''}
+          <button class="btn btn-sm btn-primary" onclick="gitDeploy(${site.id})">↓ Pull & Deploy</button>
+        </div>
       </div>
       <table style="width:100%">
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Repository</td><td style="font-size:0.82rem"><code>${site.git_repo}</code></td></tr>
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Branch</td><td style="font-size:0.82rem"><code>${site.git_branch || 'main'}</code></td></tr>
+        <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Auto-deploy</td><td style="font-size:0.82rem">${site.git_auto_deploy ? '<span style="color:var(--green)">Enabled — polls every 60s</span>' : '<span style="color:var(--muted)">Disabled</span>'}</td></tr>
       </table>
       <div id="gitDeployLog" style="display:none;margin-top:12px">
         <div class="logs-box" id="gitDeployOutput" style="max-height:200px"></div>
@@ -352,7 +358,14 @@ function siteSettingsTab(site) {
           <input type="text" id="settingGitBranch" value="${site.git_branch || 'main'}" placeholder="main" />
         </div>
       </div>
-      <div style="display:flex;gap:10px;margin-top:8px">
+      <div style="margin-top:12px">
+        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
+          <input type="checkbox" id="settingGitAuto" ${site.git_auto_deploy ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer" />
+          <span style="font-size:0.9rem;font-weight:500">Auto-deploy on new commits</span>
+        </label>
+        <div class="form-hint" style="margin-top:4px;margin-left:26px">Litehost polls the remote every 60 seconds and deploys automatically when new commits are detected.</div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:12px">
         <button class="btn btn-primary" onclick="saveGitSettings(${site.id})">Save Git Settings</button>
       </div>
     </div>
@@ -670,8 +683,9 @@ async function togglePerm(userId, siteId, perm, checked) {
 async function saveGitSettings(siteId) {
   const git_repo = document.getElementById('settingGitRepo')?.value.trim();
   const git_branch = document.getElementById('settingGitBranch')?.value.trim() || 'main';
+  const git_auto_deploy = document.getElementById('settingGitAuto')?.checked ?? false;
   try {
-    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch });
+    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch, git_auto_deploy });
     currentSite = { ...currentSite, ...updated };
     toast.success('Git settings saved');
   } catch (e) { toast.error(e.message); }

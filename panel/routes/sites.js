@@ -118,7 +118,7 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id, git_auto_deploy } = req.body;
 
   if (start_command && !start_command.includes('{PORT}') &&
       (site.runtime === 'custom' || site.runtime === 'node')) {
@@ -139,13 +139,15 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       env_vars = COALESCE(?, env_vars),
       git_repo = ?,
       git_branch = COALESCE(?, git_branch),
-      cert_id = ?
+      cert_id = ?,
+      git_auto_deploy = COALESCE(?, git_auto_deploy)
     WHERE id = ?
   `).run(
     domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
     git_repo !== undefined ? (git_repo || null) : site.git_repo,
     git_branch || null,
     cert_id !== undefined ? (cert_id || null) : site.cert_id,
+    git_auto_deploy !== undefined ? (git_auto_deploy ? 1 : 0) : null,
     site.id
   );
 
