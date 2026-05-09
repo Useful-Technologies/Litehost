@@ -6,91 +6,104 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Disk stat is expensive (spawns df) and changes slowly — cache for 30 s.
-let _diskCache = null;
-let _diskCacheAt = 0;
-const DISK_TTL = 30_000;
+// ─── Shared state ─────────────────────────────────────────────────────────────
+// The background sampler writes here; the API endpoint just reads it.
+// Initialised to null so the UI can show "—" until the first sample lands.
+const stats = {
+  cpu:    { percent: null },
+  memory: { total: 0, used: 0, free: 0 },
+  disk:   null,
+  loadAvg: { '1m': 0, '5m': 0, '15m': 0 },
+  uptime: 0,
+};
 
-function getDisk() {
-  if (_diskCache && Date.now() - _diskCacheAt < DISK_TTL) return _diskCache;
+// ─── CPU ──────────────────────────────────────────────────────────────────────
+// Keep the previous /proc/stat snapshot so each tick calculates a true delta.
+// A 5-second window is more accurate than the old 250 ms per-request sample.
+let _prevStat = null;
+
+function readProcStat() {
+  try {
+    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
+    const nums = line.trim().split(/\s+/).slice(1).map(Number);
+    // idle = idle + iowait fields (indices 3, 4)
+    return { idle: (nums[3] || 0) + (nums[4] || 0), total: nums.reduce((a, b) => a + b, 0) };
+  } catch { return null; }
+}
+
+function sampleCpu() {
+  const cur = readProcStat();
+  if (cur && _prevStat) {
+    const dt = cur.total - _prevStat.total;
+    const di = cur.idle  - _prevStat.idle;
+    stats.cpu.percent = dt > 0 ? Math.max(0, Math.min(100, Math.round((1 - di / dt) * 100))) : 0;
+  }
+  if (cur) _prevStat = cur;
+}
+
+// ─── Memory ───────────────────────────────────────────────────────────────────
+function sampleMemory() {
+  const total = os.totalmem();
+  let free = os.freemem();
+  try {
+    const m = fs.readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+)\s+kB/m);
+    if (m) free = parseInt(m[1], 10) * 1024;
+  } catch {}
+  stats.memory = { total, used: total - free, free };
+}
+
+// ─── Disk ─────────────────────────────────────────────────────────────────────
+// Prefer fs.statfsSync (Node 19+ — pure syscall, no subprocess).
+// Fall back to execSync('df') on older Node; disk changes slowly so this
+// only runs once every 6 ticks (every ~30 s at a 5-second interval).
+function sampleDisk() {
+  if (typeof fs.statfsSync === 'function') {
+    try {
+      const s = fs.statfsSync('/');
+      stats.disk = {
+        total: s.blocks * s.bsize,
+        used:  (s.blocks - s.bfree) * s.bsize,
+        free:  s.bavail * s.bsize,
+      };
+      return;
+    } catch {}
+  }
   try {
     const out = execSync('df -k --output=size,used,avail /', { stdio: 'pipe', timeout: 5000 })
       .toString().trim().split('\n');
     if (out[1]) {
-      const [size, used, avail] = out[1].trim().split(/\s+/).map(Number);
-      _diskCache = { total: size * 1024, used: used * 1024, free: avail * 1024 };
-      _diskCacheAt = Date.now();
+      const [sz, used, avail] = out[1].trim().split(/\s+/).map(Number);
+      stats.disk = { total: sz * 1024, used: used * 1024, free: avail * 1024 };
     }
   } catch {}
-  return _diskCache;
 }
 
-// Read the first "cpu" line from /proc/stat and return {idle, total}.
-// idle  = idle + iowait fields
-// total = sum of all fields
-function procStat() {
-  try {
-    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
-    const nums = line.trim().split(/\s+/).slice(1).map(Number);
-    // user nice system idle iowait irq softirq steal ...
-    const idle  = (nums[3] || 0) + (nums[4] || 0);   // idle + iowait
-    const total = nums.reduce((a, b) => a + b, 0);
-    return { idle, total };
-  } catch {
-    return null;
-  }
+// ─── Background sampler ───────────────────────────────────────────────────────
+let _diskTick = 0;
+
+function startSampler(intervalMs = 5000) {
+  // Seed the CPU baseline before the first tick so we have a delta immediately
+  _prevStat = readProcStat();
+  sampleMemory();
+  sampleDisk();
+
+  setInterval(() => {
+    sampleCpu();
+    sampleMemory();
+    const [l1, l5, l15] = os.loadavg();
+    stats.loadAvg = { '1m': +l1.toFixed(2), '5m': +l5.toFixed(2), '15m': +l15.toFixed(2) };
+    stats.uptime  = Math.round(os.uptime());
+
+    // Disk: every 6 ticks (~30 s). No need to check every 5 s.
+    if (++_diskTick % 6 === 0) sampleDisk();
+  }, intervalMs);
 }
 
-// GET /api/system/stats
-// Returns cpu, memory, disk, loadAvg, uptime.
-// Requires authentication — no owner gate, subusers can see system health too.
-router.get('/stats', requireAuth, async (req, res) => {
-  // ── CPU ────────────────────────────────────────────────────────────────────
-  // Sample /proc/stat twice, 250 ms apart, and compute delta-based usage.
-  const s1 = procStat();
-  await new Promise(r => setTimeout(r, 250));
-  const s2 = procStat();
+// Kick off as soon as the module is loaded — no change needed in server.js
+startSampler();
 
-  let cpuPercent = null;
-  if (s1 && s2) {
-    const totalDelta = s2.total - s1.total;
-    const idleDelta  = s2.idle  - s1.idle;
-    cpuPercent = totalDelta > 0
-      ? Math.max(0, Math.min(100, Math.round((1 - idleDelta / totalDelta) * 100)))
-      : 0;
-  }
-
-  // ── Memory ─────────────────────────────────────────────────────────────────
-  // Read /proc/meminfo directly so we can use MemAvailable, which includes
-  // reclaimable page cache.  os.freemem() only returns MemFree (truly idle
-  // pages) — Linux fills spare RAM with file cache, so that number climbs
-  // indefinitely even when the system is healthy.  MemAvailable is what
-  // `free -h`, `htop`, and the kernel itself use for "memory you can use".
-  const totalMem = os.totalmem();
-  let freeMem = os.freemem(); // fallback if /proc/meminfo is unavailable
-  try {
-    const meminfo = fs.readFileSync('/proc/meminfo', 'utf8');
-    const match = meminfo.match(/^MemAvailable:\s+(\d+)\s+kB/m);
-    if (match) freeMem = parseInt(match[1], 10) * 1024;
-  } catch {}
-
-  // ── Disk (root partition, cached 30 s) ────────────────────────────────────
-  const disk = getDisk();
-
-  // ── Load average ───────────────────────────────────────────────────────────
-  const [l1, l5, l15] = os.loadavg();
-
-  res.json({
-    cpu: { percent: cpuPercent },
-    memory: { total: totalMem, used: totalMem - freeMem, free: freeMem },
-    disk,
-    loadAvg: {
-      '1m':  Math.round(l1  * 100) / 100,
-      '5m':  Math.round(l5  * 100) / 100,
-      '15m': Math.round(l15 * 100) / 100,
-    },
-    uptime: Math.round(os.uptime()),
-  });
-});
+// ─── Route ────────────────────────────────────────────────────────────────────
+// Purely synchronous — just serialise the in-memory object.
+router.get('/stats', requireAuth, (req, res) => res.json(stats));
 
 module.exports = router;
