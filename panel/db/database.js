@@ -75,12 +75,16 @@ try { db.exec(`UPDATE sites SET git_branch = 'main' WHERE git_branch IS NULL`); 
 try { db.exec(`ALTER TABLE sites ADD COLUMN cert_id INTEGER REFERENCES certificates(id) ON DELETE SET NULL`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN git_auto_deploy INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN deploy_token TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN webhook_secret TEXT`); } catch {}
 
-// Generate deploy tokens for any sites that don't have one
+// Generate deploy tokens and webhook secrets for any sites that don't have them
 const crypto = require('crypto');
-const sitesNeedingToken = db.prepare('SELECT id FROM sites WHERE deploy_token IS NULL').all();
-for (const s of sitesNeedingToken) {
+for (const s of db.prepare('SELECT id FROM sites WHERE deploy_token IS NULL').all()) {
   db.prepare('UPDATE sites SET deploy_token = ? WHERE id = ?')
+    .run(crypto.randomBytes(32).toString('hex'), s.id);
+}
+for (const s of db.prepare('SELECT id FROM sites WHERE webhook_secret IS NULL').all()) {
+  db.prepare('UPDATE sites SET webhook_secret = ? WHERE id = ?')
     .run(crypto.randomBytes(32).toString('hex'), s.id);
 }
 

@@ -113,9 +113,12 @@ router.get('/:id', requireAuth, (req, res) => {
   const dnsStatus = site.domain ? dns.checkDNS(site.domain) : null;
   const sslStatus = ssl.getSSLStatus(site.cert_id);
 
-  // Only expose deploy token to owners
+  // Only expose deploy credentials to owners
   const payload = { ...site, dns: dnsStatus, ssl: sslStatus };
-  if (req.user.role !== 'owner') delete payload.deploy_token;
+  if (req.user.role !== 'owner') {
+    delete payload.deploy_token;
+    delete payload.webhook_secret;
+  }
 
   res.json(payload);
 });
@@ -257,6 +260,15 @@ router.post('/:id/rotate-deploy-token', requireAuth, requireOwner, (req, res) =>
   const token = crypto.randomBytes(32).toString('hex');
   db.prepare('UPDATE sites SET deploy_token = ? WHERE id = ?').run(token, site.id);
   res.json({ deploy_token: token });
+});
+
+// Rotate webhook secret (generates a new one — must be re-entered in GitHub webhook settings)
+router.post('/:id/rotate-webhook-secret', requireAuth, requireOwner, (req, res) => {
+  const site = db.prepare('SELECT id FROM sites WHERE id = ?').get(req.params.id);
+  if (!site) return res.status(404).json({ error: 'Site not found' });
+  const secret = crypto.randomBytes(32).toString('hex');
+  db.prepare('UPDATE sites SET webhook_secret = ? WHERE id = ?').run(secret, site.id);
+  res.json({ webhook_secret: secret });
 });
 
 // Git deploy

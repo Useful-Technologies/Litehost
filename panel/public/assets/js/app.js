@@ -363,15 +363,29 @@ function siteSettingsTab(site) {
       </div>
       ${site.deploy_token ? `
       <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
-        <div style="font-weight:600;margin-bottom:8px;font-size:0.9rem">⚡ GitHub Actions Deploy</div>
-        <div class="form-hint" style="margin-bottom:10px">Add this as a GitHub Actions secret named <code>LITEHOST_DEPLOY_URL</code>, then use the workflow below to auto-deploy on every push.</div>
-        <div style="display:flex;gap:6px;margin-bottom:10px">
-          <input type="text" id="deployWebhookUrl" value="${window.location.origin}/api/deploy/${site.deploy_token}" readonly
-            style="flex:1;font-family:monospace;font-size:0.8rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px" />
-          <button class="btn btn-sm btn-secondary" onclick="copyDeployUrl()">Copy</button>
-          <button class="btn btn-sm btn-secondary" onclick="rotateDeployToken(${site.id})" title="Generate a new token (invalidates old one)">↺</button>
+        <div style="font-weight:600;margin-bottom:4px;font-size:0.9rem">⚡ Auto-deploy via GitHub Webhook</div>
+        <div class="form-hint" style="margin-bottom:14px">Go to your GitHub repo → <strong>Settings → Webhooks → Add webhook</strong>. Fill in the two fields below, set Content type to <code>application/json</code>, and choose <em>Just the push event</em>.</div>
+
+        <div style="display:grid;gap:8px">
+          <div>
+            <label style="font-size:0.8rem;color:var(--muted);display:block;margin-bottom:4px">Payload URL</label>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="deployWebhookUrl" value="${window.location.origin}/api/deploy/${site.deploy_token}" readonly
+                style="flex:1;font-family:monospace;font-size:0.8rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px" />
+              <button class="btn btn-sm btn-secondary" onclick="copyField('deployWebhookUrl')">Copy</button>
+              <button class="btn btn-sm btn-secondary" onclick="rotateDeployToken(${site.id})" title="Regenerate URL token (invalidates old URL)">↺</button>
+            </div>
+          </div>
+          <div>
+            <label style="font-size:0.8rem;color:var(--muted);display:block;margin-bottom:4px">Secret</label>
+            <div style="display:flex;gap:6px">
+              <input type="text" id="deployWebhookSecret" value="${site.webhook_secret}" readonly
+                style="flex:1;font-family:monospace;font-size:0.8rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px" />
+              <button class="btn btn-sm btn-secondary" onclick="copyField('deployWebhookSecret')">Copy</button>
+              <button class="btn btn-sm btn-secondary" onclick="rotateWebhookSecret(${site.id})" title="Regenerate secret (must update GitHub webhook)">↺</button>
+            </div>
+          </div>
         </div>
-        <pre style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:0.75rem;overflow-x:auto;margin:0">${githubActionsYaml(site.git_branch || 'main')}</pre>
       </div>` : ''}
     </div>
 
@@ -697,36 +711,31 @@ async function saveGitSettings(siteId) {
   } catch (e) { toast.error(e.message); }
 }
 
-function githubActionsYaml(branch) {
-  return `name: Deploy to Litehost
-on:
-  push:
-    branches: ["${branch}"]
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Trigger deploy
-        run: |
-          curl -s -o /dev/null -w "%{http_code}" \\
-            -X POST "\${{ secrets.LITEHOST_DEPLOY_URL }}"`.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-function copyDeployUrl() {
-  const el = document.getElementById('deployWebhookUrl');
+function copyField(id) {
+  const el = document.getElementById(id);
   if (!el) return;
-  navigator.clipboard.writeText(el.value).then(() => toast.success('Webhook URL copied')).catch(() => {
-    el.select(); document.execCommand('copy'); toast.success('Webhook URL copied');
-  });
+  navigator.clipboard.writeText(el.value)
+    .then(() => toast.success('Copied'))
+    .catch(() => { el.select(); document.execCommand('copy'); toast.success('Copied'); });
 }
 
 async function rotateDeployToken(siteId) {
-  if (!confirm('This will invalidate the current webhook URL. Any existing GitHub secret will need to be updated. Continue?')) return;
+  if (!confirm('This regenerates the Payload URL. You\'ll need to update the webhook in GitHub. Continue?')) return;
   try {
     const data = await api.post(`/sites/${siteId}/rotate-deploy-token`);
     currentSite = { ...currentSite, deploy_token: data.deploy_token };
     renderSiteContent();
-    toast.success('Deploy token regenerated — update your GitHub secret');
+    toast.success('Payload URL regenerated — update your GitHub webhook');
+  } catch (e) { toast.error(e.message); }
+}
+
+async function rotateWebhookSecret(siteId) {
+  if (!confirm('This regenerates the secret. You\'ll need to update the webhook in GitHub. Continue?')) return;
+  try {
+    const data = await api.post(`/sites/${siteId}/rotate-webhook-secret`);
+    currentSite = { ...currentSite, webhook_secret: data.webhook_secret };
+    renderSiteContent();
+    toast.success('Webhook secret regenerated — update your GitHub webhook');
   } catch (e) { toast.error(e.message); }
 }
 
