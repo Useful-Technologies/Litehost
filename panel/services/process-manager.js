@@ -157,4 +157,15 @@ function recoverProcesses() {
   }
 }
 
-module.exports = { startSite, stopSite, isRunning, findFreePort, buildCommand, recoverProcesses };
+// Return [{siteId, pid}] for every process currently tracked in the Map.
+function getTrackedPids() {
+  const out = [];
+  for (const [siteId, proc] of processes) {
+    if (proc && proc.pid && proc.exitCode === null && proc.signalCode === null) {
+      out.push({ siteId, pid: proc.pid });
+    }
+  }
+  return out;
+}
+
+module.exports = { startSite, stopSite, isRunning, findFreePort, buildCommand, recoverProcesses, getTrackedPids };

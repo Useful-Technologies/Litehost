@@ -5,6 +5,7 @@ let currentSite = null;
 let currentSiteTab = 'overview';
 let editorState = { siteId: null, path: null };
 let availableCerts = []; // cached cert list for dropdowns
+let currentSites = [];   // cached sites list for process memory name resolution
 let _systemPoller = null;
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
@@ -59,6 +60,7 @@ async function renderDashboard() {
     ? `<button class="btn btn-primary" onclick="openModal('createSiteModal')">+ New Site</button>` : '');
 
   const sites = await api.get('/sites').catch(() => []);
+  currentSites = sites;
   const running = sites.filter(s => s.status === 'running').length;
 
   setContent(`
@@ -116,6 +118,14 @@ async function renderDashboard() {
         <div class="resource-bar" style="visibility:hidden"><div class="resource-fill" style="width:0%"></div></div>
         <div class="resource-sub" id="resUptimeSub">&nbsp;</div>
       </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">Process Memory</span>
+        <span style="font-size:0.75rem;color:var(--muted)">RSS = actual RAM used by each process</span>
+      </div>
+      <div id="procMemBody" style="font-size:0.85rem;color:var(--muted);padding:4px 0">Loading…</div>
     </div>
 
     <div class="card">
@@ -904,6 +914,31 @@ function startSystemPoller() {
     // Uptime
     const uptimeEl = document.getElementById('resUptime');
     if (uptimeEl) uptimeEl.textContent = fmtUptime(s.uptime);
+
+    // Process memory breakdown
+    const procEl = document.getElementById('procMemBody');
+    if (procEl && s.procs) {
+      const p = s.procs.panel;
+      const rows = [
+        `<div class="proc-mem-row">
+          <span class="proc-mem-name">⚡ Panel (Node.js)</span>
+          <span class="proc-mem-rss">${fmtBytes(p.rss)} RSS</span>
+          <span class="proc-mem-heap" style="color:var(--muted)">${fmtBytes(p.heapUsed)} / ${fmtBytes(p.heapTotal)} heap</span>
+        </div>`,
+      ];
+      for (const site of s.procs.sites || []) {
+        // Try to resolve the site name from the already-loaded sites list
+        const siteName = (typeof currentSites !== 'undefined' && currentSites.find(x => x.id === site.siteId)?.name) || `site #${site.siteId}`;
+        rows.push(
+          `<div class="proc-mem-row">
+            <span class="proc-mem-name">🌐 ${siteName}</span>
+            <span class="proc-mem-rss">${fmtBytes(site.rss)} RSS</span>
+            <span class="proc-mem-heap" style="color:var(--muted)">pid ${site.pid}</span>
+          </div>`
+        );
+      }
+      procEl.innerHTML = rows.join('');
+    }
   }
 
   tick();

@@ -177,6 +177,20 @@ a:hover { text-decoration: underline; }
   text-overflow: ellipsis;
 }
 
+/* Process memory breakdown */
+.proc-mem-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 0.83rem;
+}
+.proc-mem-row:last-child { border-bottom: none; }
+.proc-mem-name { flex: 1; font-weight: 500; }
+.proc-mem-rss  { color: var(--text); min-width: 90px; text-align: right; }
+.proc-mem-heap { min-width: 160px; text-align: right; font-size: 0.78rem; }
+
 /* Site list table */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
