@@ -907,7 +907,7 @@ function startSystemPoller() {
   }
 
   tick();
-  _systemPoller = setInterval(tick, 3000);
+  _systemPoller = setInterval(tick, 5000);
 }
 
 function fillClass(pct) {
