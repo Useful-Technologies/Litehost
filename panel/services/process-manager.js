@@ -67,12 +67,21 @@ function startSite(site) {
     PORT: String(site.port),
   };
 
-  const proc = spawn('/bin/sh', ['-c', cmd], {
-    cwd: siteDir,
-    env: siteEnv,
-    detached: false,
-    stdio: ['ignore', fd, fd],
-  });
+  let proc;
+  try {
+    proc = spawn('/bin/sh', ['-c', cmd], {
+      cwd: siteDir,
+      env: siteEnv,
+      detached: false,
+      stdio: ['ignore', fd, fd],
+    });
+  } catch (err) {
+    // spawn() threw synchronously — close fd now, it will never be closed by an event
+    logLine(fd, `[ERROR] spawn failed: ${err.message}`);
+    try { fs.closeSync(fd); } catch {}
+    db.prepare("UPDATE sites SET status = 'error' WHERE id = ?").run(site.id);
+    throw err;
+  }
 
   proc.on('error', (err) => {
     logLine(fd, `[ERROR] ${err.message}`);

@@ -111,16 +111,43 @@ router.put('/write', requireAuth, requireSitePermission('files'), (req, res) => 
   res.json({ success: true });
 });
 
+// Clean up any temp files multer already saved — called on error paths
+// so we never leave orphaned files in /tmp/litehost-uploads.
+function cleanTempFiles(files) {
+  for (const f of files || []) {
+    try { fs.unlinkSync(f.path); } catch {}
+  }
+}
+
+// Move a file, falling back to copy+delete if src and dest are on different
+// filesystems (rename() fails with EXDEV across mount points).
+function moveFile(src, dest) {
+  try {
+    fs.renameSync(src, dest);
+  } catch (err) {
+    if (err.code === 'EXDEV') {
+      fs.copyFileSync(src, dest);
+      fs.unlinkSync(src);
+    } else {
+      throw err;
+    }
+  }
+}
+
 // Upload file(s)
 router.post('/upload', requireAuth, requireSitePermission('files'), upload.array('files', 20), (req, res) => {
   const site = getSite(req.params.siteId);
-  if (!site) return res.status(404).json({ error: 'Site not found' });
+  if (!site) {
+    cleanTempFiles(req.files);
+    return res.status(404).json({ error: 'Site not found' });
+  }
 
   const siteDir = getSiteDir(site.name);
   let destDir;
   try {
     destDir = safePath(siteDir, req.body.path || '');
   } catch (e) {
+    cleanTempFiles(req.files);
     return res.status(400).json({ error: e.message });
   }
 
@@ -129,8 +156,13 @@ router.post('/upload', requireAuth, requireSitePermission('files'), upload.array
   const uploaded = [];
   for (const file of req.files || []) {
     const dest = path.join(destDir, file.originalname);
-    fs.renameSync(file.path, dest);
-    uploaded.push(file.originalname);
+    try {
+      moveFile(file.path, dest);
+      uploaded.push(file.originalname);
+    } catch (err) {
+      // Best-effort cleanup of this temp file; already-moved files stay
+      try { fs.unlinkSync(file.path); } catch {}
+    }
   }
 
   res.json({ success: true, uploaded });
