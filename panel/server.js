@@ -8,7 +8,6 @@ const fs = require('fs');
 const bcrypt = require('bcrypt');
 const db = require('./db/database');
 const pm = require('./services/process-manager');
-const gitPoller = require('./services/git-poller');
 
 const app = express();
 const PORT = process.env.PANEL_PORT || 3000;
@@ -57,6 +56,7 @@ app.use('/api/sites', require('./routes/sites'));
 app.use('/api/sites/:siteId/files', require('./routes/files'));
 app.use('/api/users', require('./routes/users'));
 app.use('/api/certs', require('./routes/certs'));
+app.use('/api/deploy', require('./routes/deploy'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.0' }));
 
@@ -99,7 +99,6 @@ function generatePassword() {
 async function boot() {
   await ensureOwner();
   pm.recoverProcesses();
-  gitPoller.start();
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`Litehost panel running on http://0.0.0.0:${PORT}`);
   });

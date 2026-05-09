@@ -255,7 +255,7 @@ function siteOverviewTab(site) {
       <table style="width:100%">
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Repository</td><td style="font-size:0.82rem"><code>${site.git_repo}</code></td></tr>
         <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Branch</td><td style="font-size:0.82rem"><code>${site.git_branch || 'main'}</code></td></tr>
-        <tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Auto-deploy</td><td style="font-size:0.82rem">${site.git_auto_deploy ? '<span style="color:var(--green)">Enabled — polls every 60s</span>' : '<span style="color:var(--muted)">Disabled</span>'}</td></tr>
+        ${site.deploy_token ? `<tr><td style="color:var(--muted);padding:6px 0;font-size:0.82rem">Auto-deploy</td><td style="font-size:0.82rem"><span style="color:var(--green)">● GitHub Actions webhook ready</span></td></tr>` : ''}
       </table>
       <div id="gitDeployLog" style="display:none;margin-top:12px">
         <div class="logs-box" id="gitDeployOutput" style="max-height:200px"></div>
@@ -358,16 +358,21 @@ function siteSettingsTab(site) {
           <input type="text" id="settingGitBranch" value="${site.git_branch || 'main'}" placeholder="main" />
         </div>
       </div>
-      <div style="margin-top:12px">
-        <label style="display:flex;align-items:center;gap:10px;cursor:pointer;user-select:none">
-          <input type="checkbox" id="settingGitAuto" ${site.git_auto_deploy ? 'checked' : ''} style="width:16px;height:16px;cursor:pointer" />
-          <span style="font-size:0.9rem;font-weight:500">Auto-deploy on new commits</span>
-        </label>
-        <div class="form-hint" style="margin-top:4px;margin-left:26px">Litehost polls the remote every 60 seconds and deploys automatically when new commits are detected.</div>
-      </div>
       <div style="display:flex;gap:10px;margin-top:12px">
         <button class="btn btn-primary" onclick="saveGitSettings(${site.id})">Save Git Settings</button>
       </div>
+      ${site.deploy_token ? `
+      <div style="margin-top:20px;padding-top:16px;border-top:1px solid var(--border)">
+        <div style="font-weight:600;margin-bottom:8px;font-size:0.9rem">⚡ GitHub Actions Deploy</div>
+        <div class="form-hint" style="margin-bottom:10px">Add this as a GitHub Actions secret named <code>LITEHOST_DEPLOY_URL</code>, then use the workflow below to auto-deploy on every push.</div>
+        <div style="display:flex;gap:6px;margin-bottom:10px">
+          <input type="text" id="deployWebhookUrl" value="${window.location.origin}/api/deploy/${site.deploy_token}" readonly
+            style="flex:1;font-family:monospace;font-size:0.8rem;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:6px 10px" />
+          <button class="btn btn-sm btn-secondary" onclick="copyDeployUrl()">Copy</button>
+          <button class="btn btn-sm btn-secondary" onclick="rotateDeployToken(${site.id})" title="Generate a new token (invalidates old one)">↺</button>
+        </div>
+        <pre style="background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:12px;font-size:0.75rem;overflow-x:auto;margin:0">${githubActionsYaml(site.git_branch || 'main')}</pre>
+      </div>` : ''}
     </div>
 
     ${currentUser.role === 'owner' && site.domain ? `
@@ -681,13 +686,47 @@ async function togglePerm(userId, siteId, perm, checked) {
 
 // ─── Git ──────────────────────────────────────────────────────────────────────
 async function saveGitSettings(siteId) {
-  const git_repo = document.getElementById('settingGitRepo')?.value.trim();
+  const git_repo   = document.getElementById('settingGitRepo')?.value.trim();
   const git_branch = document.getElementById('settingGitBranch')?.value.trim() || 'main';
-  const git_auto_deploy = document.getElementById('settingGitAuto')?.checked ?? false;
   try {
-    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch, git_auto_deploy });
+    const updated = await api.patch(`/sites/${siteId}`, { git_repo: git_repo || null, git_branch });
     currentSite = { ...currentSite, ...updated };
     toast.success('Git settings saved');
+    // Refresh so the webhook URL updates with the new branch name
+    renderSiteContent();
+  } catch (e) { toast.error(e.message); }
+}
+
+function githubActionsYaml(branch) {
+  return `name: Deploy to Litehost
+on:
+  push:
+    branches: ["${branch}"]
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger deploy
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" \\
+            -X POST "\${{ secrets.LITEHOST_DEPLOY_URL }}"`.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function copyDeployUrl() {
+  const el = document.getElementById('deployWebhookUrl');
+  if (!el) return;
+  navigator.clipboard.writeText(el.value).then(() => toast.success('Webhook URL copied')).catch(() => {
+    el.select(); document.execCommand('copy'); toast.success('Webhook URL copied');
+  });
+}
+
+async function rotateDeployToken(siteId) {
+  if (!confirm('This will invalidate the current webhook URL. Any existing GitHub secret will need to be updated. Continue?')) return;
+  try {
+    const data = await api.post(`/sites/${siteId}/rotate-deploy-token`);
+    currentSite = { ...currentSite, deploy_token: data.deploy_token };
+    renderSiteContent();
+    toast.success('Deploy token regenerated — update your GitHub secret');
   } catch (e) { toast.error(e.message); }
 }
 
