@@ -178,17 +178,47 @@ function enableHTTPS(site) {
   return true;
 }
 
+const PANEL_CERT_DIR = '/etc/hostctl/panel-cert';
+
+// Generate a self-signed cert for the panel's default_server block if one
+// doesn't exist yet.  This lets nginx answer port 443 for unmatched hosts
+// (e.g. via Cloudflare Full SSL) instead of falling through to a real site.
+function ensurePanelCert() {
+  const certFile = `${PANEL_CERT_DIR}/cert.pem`;
+  const keyFile  = `${PANEL_CERT_DIR}/key.pem`;
+  if (fs.existsSync(certFile) && fs.existsSync(keyFile)) return { certFile, keyFile };
+  fs.mkdirSync(PANEL_CERT_DIR, { recursive: true, mode: 0o700 });
+  execSync(
+    `openssl req -x509 -nodes -newkey rsa:2048` +
+    ` -keyout ${keyFile} -out ${certFile}` +
+    ` -days 3650 -subj '/CN=litehost-panel'`,
+    { stdio: 'pipe' }
+  );
+  return { certFile, keyFile };
+}
+
 // Write /etc/nginx/conf.d/litehost.conf — the catch-all default_server that
-// forwards any unrecognised Host to the panel itself.  Called once on boot.
+// forwards any unrecognised Host to the panel itself on both port 80 and 443.
+// Without a 443 default_server, nginx uses the first real site with listen 443
+// as the implicit default, meaning unmatched subdomains (e.g. panel.example.com
+// via Cloudflare Full SSL) silently serve the wrong site.
 function writeDefaultConfig() {
   const panelPort = process.env.PANEL_PORT || 3000;
+  const { certFile, keyFile } = ensurePanelCert();
+
   const conf = `# Managed by Litehost — do not edit manually
 server_names_hash_bucket_size 128;
 
 server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
+    listen 80  default_server;
+    listen [::]:80  default_server;
+    listen 443 ssl  default_server;
+    listen [::]:443 ssl default_server;
     server_name _;
+
+    ssl_certificate     ${certFile};
+    ssl_certificate_key ${keyFile};
+    ssl_protocols       TLSv1.2 TLSv1.3;
 
     location / {
         proxy_pass         http://127.0.0.1:${panelPort};
