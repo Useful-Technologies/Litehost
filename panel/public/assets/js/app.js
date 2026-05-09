@@ -937,8 +937,19 @@ function startSystemPoller() {
         </div>`);
       }
 
-      // All top processes (updated every ~30 s) — shows what else is consuming RAM
-      const topRows = (s.top || []).map(proc =>
+      // Grouped-by-name summary (updated every ~30 s) — reveals multi-worker services
+      const grouped = s.top?.grouped || [];
+      const groupedRows = grouped.map(g =>
+        `<div class="proc-mem-row">
+          <span class="proc-mem-name" style="color:var(--muted)">${g.name}${g.count > 1 ? ` <span style="color:var(--muted);font-size:0.8em">(×${g.count})</span>` : ''}</span>
+          <span class="proc-mem-rss">${fmtBytes(g.totalRss)} RSS</span>
+          <span class="proc-mem-heap">${g.count > 1 ? `${fmtBytes(Math.round(g.totalRss / g.count))} avg` : '1 process'}</span>
+        </div>`
+      ).join('');
+
+      // Individual top-N processes
+      const topList = s.top?.top || [];
+      const topRows = topList.map(proc =>
         `<div class="proc-mem-row">
           <span class="proc-mem-name" style="color:var(--muted)">${proc.name}</span>
           <span class="proc-mem-rss">${fmtBytes(proc.rss)} RSS</span>
@@ -946,9 +957,12 @@ function startSystemPoller() {
         </div>`
       ).join('');
 
-      procEl.innerHTML = managed.join('') + (s.top?.length
-        ? `<div style="margin:10px 0 6px;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">All processes (top by RSS)</div>${topRows}`
-        : '');
+      const sectionHdr = (label) =>
+        `<div style="margin:10px 0 6px;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">${label}</div>`;
+
+      procEl.innerHTML = managed.join('')
+        + (grouped.length ? sectionHdr('By process type') + groupedRows : '')
+        + (topList.length  ? sectionHdr('Top processes (individual)')  + topRows  : '');
     }
   }
 
