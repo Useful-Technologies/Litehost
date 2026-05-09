@@ -95,11 +95,20 @@ function startSite(site) {
 }
 
 function stopSite(siteId) {
+  // Kill tracked child process
   const proc = processes.get(siteId);
   if (proc) {
     try { proc.kill('SIGTERM'); } catch {}
     processes.delete(siteId);
   }
+
+  // Also kill by port — catches processes that outlived a panel restart
+  // (recoverProcesses marks them running but can't track their PID)
+  const site = db.prepare('SELECT port FROM sites WHERE id = ?').get(siteId);
+  if (site?.port) {
+    try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
+  }
+
   db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(siteId);
 }
 
