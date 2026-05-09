@@ -74,6 +74,15 @@ for (const col of ['git_repo', 'git_branch', 'deploy_command']) {
 try { db.exec(`UPDATE sites SET git_branch = 'main' WHERE git_branch IS NULL`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN cert_id INTEGER REFERENCES certificates(id) ON DELETE SET NULL`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN git_auto_deploy INTEGER NOT NULL DEFAULT 0`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN deploy_token TEXT`); } catch {}
+
+// Generate deploy tokens for any sites that don't have one
+const crypto = require('crypto');
+const sitesNeedingToken = db.prepare('SELECT id FROM sites WHERE deploy_token IS NULL').all();
+for (const s of sitesNeedingToken) {
+  db.prepare('UPDATE sites SET deploy_token = ? WHERE id = ?')
+    .run(crypto.randomBytes(32).toString('hex'), s.id);
+}
 
 // Migrate old domain-keyed SSL certs → certificates table
 const CERT_DIR = '/etc/hostctl/certs';

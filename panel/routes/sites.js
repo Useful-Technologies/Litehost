@@ -2,6 +2,7 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
+const crypto = require('crypto');
 const db = require('../db/database');
 const { requireAuth, requireOwner, requireSitePermission } = require('../middleware/auth');
 const nginx = require('../services/nginx');
@@ -74,10 +75,12 @@ router.post('/', requireAuth, requireOwner, (req, res) => {
     catch (e) { return res.status(500).json({ error: e.message }); }
   }
 
+  const deploy_token = crypto.randomBytes(32).toString('hex');
+
   const result = db.prepare(`
-    INSERT INTO sites (name, domain, runtime, port, start_command, php_version)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `).run(slug, domain || null, runtime || 'static', port, start_command || null, php_version || '8.1');
+    INSERT INTO sites (name, domain, runtime, port, start_command, php_version, deploy_token)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(slug, domain || null, runtime || 'static', port, start_command || null, php_version || '8.1', deploy_token);
 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(result.lastInsertRowid);
 
@@ -110,7 +113,11 @@ router.get('/:id', requireAuth, (req, res) => {
   const dnsStatus = site.domain ? dns.checkDNS(site.domain) : null;
   const sslStatus = ssl.getSSLStatus(site.cert_id);
 
-  res.json({ ...site, dns: dnsStatus, ssl: sslStatus });
+  // Only expose deploy token to owners
+  const payload = { ...site, dns: dnsStatus, ssl: sslStatus };
+  if (req.user.role !== 'owner') delete payload.deploy_token;
+
+  res.json(payload);
 });
 
 // Update site settings
@@ -241,6 +248,15 @@ router.get('/:id/logs', requireAuth, requireSitePermission('view'), (req, res) =
   if (!allLines.length) return res.json({ lines: [] });
 
   res.json({ lines: allLines.slice(-lines) });
+});
+
+// Rotate deploy token (generates a new one, invalidating the old)
+router.post('/:id/rotate-deploy-token', requireAuth, requireOwner, (req, res) => {
+  const site = db.prepare('SELECT id FROM sites WHERE id = ?').get(req.params.id);
+  if (!site) return res.status(404).json({ error: 'Site not found' });
+  const token = crypto.randomBytes(32).toString('hex');
+  db.prepare('UPDATE sites SET deploy_token = ? WHERE id = ?').run(token, site.id);
+  res.json({ deploy_token: token });
 });
 
 // Git deploy
