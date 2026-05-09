@@ -5,6 +5,7 @@ let currentSite = null;
 let currentSiteTab = 'overview';
 let editorState = { siteId: null, path: null };
 let availableCerts = []; // cached cert list for dropdowns
+let _systemPoller = null;
 
 // ─── Boot ─────────────────────────────────────────────────────────────────────
 window.addEventListener('DOMContentLoaded', async () => {
@@ -37,6 +38,7 @@ function setupNav() {
 }
 
 function navigate(view, siteId) {
+  stopSystemPoller();
   currentView = view;
   document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
   const navTarget = view === 'site' ? 'sites' : view;
@@ -81,6 +83,41 @@ async function renderDashboard() {
       </div>
     </div>
 
+    <div class="resource-grid">
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="resource-label">CPU</span>
+          <span class="resource-pct" id="resCpuPct">—</span>
+        </div>
+        <div class="resource-bar"><div class="resource-fill" id="resCpuBar" style="width:0%"></div></div>
+        <div class="resource-sub" id="resCpuSub">Load: —</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="resource-label">Memory</span>
+          <span class="resource-pct" id="resRamPct">—</span>
+        </div>
+        <div class="resource-bar"><div class="resource-fill" id="resRamBar" style="width:0%"></div></div>
+        <div class="resource-sub" id="resRamSub">— / —</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="resource-label">Disk</span>
+          <span class="resource-pct" id="resDiskPct">—</span>
+        </div>
+        <div class="resource-bar"><div class="resource-fill" id="resDiskBar" style="width:0%"></div></div>
+        <div class="resource-sub" id="resDiskSub">— / —</div>
+      </div>
+      <div class="resource-card">
+        <div class="resource-header">
+          <span class="resource-label">Uptime</span>
+          <span class="resource-pct" style="font-size:1rem" id="resUptime">—</span>
+        </div>
+        <div class="resource-bar" style="visibility:hidden"><div class="resource-fill" style="width:0%"></div></div>
+        <div class="resource-sub" id="resUptimeSub">&nbsp;</div>
+      </div>
+    </div>
+
     <div class="card">
       <div class="card-header">
         <span class="card-title">All Sites</span>
@@ -88,6 +125,8 @@ async function renderDashboard() {
       ${sitesTable(sites)}
     </div>
   `);
+
+  startSystemPoller();
 }
 
 // ─── Sites List ───────────────────────────────────────────────────────────────
@@ -821,6 +860,75 @@ async function saveSiteCert(siteId) {
     currentSite = { ...currentSite, ...updated };
     toast.success('SSL settings saved');
   } catch (e) { toast.error(e.message); }
+}
+
+// ─── System resource poller ───────────────────────────────────────────────────
+function stopSystemPoller() {
+  if (_systemPoller) { clearInterval(_systemPoller); _systemPoller = null; }
+}
+
+function startSystemPoller() {
+  stopSystemPoller();
+  async function tick() {
+    let s;
+    try { s = await api.get('/system/stats'); } catch { return; }
+
+    // CPU
+    if (s.cpu.percent !== null) {
+      const pct = s.cpu.percent;
+      const el = document.getElementById('resCpuPct'); if (el) el.textContent = pct + '%';
+      const bar = document.getElementById('resCpuBar');
+      if (bar) { bar.style.width = pct + '%'; bar.className = 'resource-fill' + fillClass(pct); }
+      const sub = document.getElementById('resCpuSub');
+      if (sub) sub.textContent = `Load: ${s.loadAvg['1m']} / ${s.loadAvg['5m']} / ${s.loadAvg['15m']}`;
+    }
+
+    // RAM
+    const ramPct = Math.round(s.memory.used / s.memory.total * 100);
+    const ramEl  = document.getElementById('resRamPct');  if (ramEl)  ramEl.textContent  = ramPct + '%';
+    const ramBar = document.getElementById('resRamBar');
+    if (ramBar) { ramBar.style.width = ramPct + '%'; ramBar.className = 'resource-fill' + fillClass(ramPct); }
+    const ramSub = document.getElementById('resRamSub');
+    if (ramSub) ramSub.textContent = fmtBytes(s.memory.used) + ' / ' + fmtBytes(s.memory.total);
+
+    // Disk
+    if (s.disk) {
+      const diskPct = Math.round(s.disk.used / s.disk.total * 100);
+      const diskEl  = document.getElementById('resDiskPct');  if (diskEl)  diskEl.textContent  = diskPct + '%';
+      const diskBar = document.getElementById('resDiskBar');
+      if (diskBar) { diskBar.style.width = diskPct + '%'; diskBar.className = 'resource-fill' + fillClass(diskPct); }
+      const diskSub = document.getElementById('resDiskSub');
+      if (diskSub) diskSub.textContent = fmtBytes(s.disk.used) + ' / ' + fmtBytes(s.disk.total);
+    }
+
+    // Uptime
+    const uptimeEl = document.getElementById('resUptime');
+    if (uptimeEl) uptimeEl.textContent = fmtUptime(s.uptime);
+  }
+
+  tick();
+  _systemPoller = setInterval(tick, 3000);
+}
+
+function fillClass(pct) {
+  if (pct >= 90) return ' danger';
+  if (pct >= 70) return ' warn';
+  return '';
+}
+
+function fmtBytes(b) {
+  if (b >= 1073741824) return (b / 1073741824).toFixed(1) + ' GB';
+  if (b >= 1048576)    return (b / 1048576).toFixed(0)    + ' MB';
+  return (b / 1024).toFixed(0) + ' KB';
+}
+
+function fmtUptime(sec) {
+  const d = Math.floor(sec / 86400);
+  const h = Math.floor((sec % 86400) / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
 }
 
 // ─── Auth ─────────────────────────────────────────────────────────────────────
