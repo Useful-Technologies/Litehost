@@ -213,8 +213,12 @@ router.post('/:id/process/:action', requireAuth, requireSitePermission('deploy')
     if (action === 'restart') {
       pm.stopSite(site.id);
       setTimeout(() => {
-        const pid = pm.startSite(site);
-        res.json({ success: true, pid });
+        try {
+          const pid = pm.startSite(site);
+          if (!res.writableEnded) res.json({ success: true, pid });
+        } catch (e) {
+          if (!res.writableEnded) res.status(500).json({ error: e.message });
+        }
       }, 500);
       return;
     }

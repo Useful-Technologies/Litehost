@@ -1,5 +1,13 @@
 const db = require('../db/database');
 
+// Prepared once at module load — better-sqlite3 compiles SQL on every
+// db.prepare() call, so calling it per-request wastes CPU and allocates
+// a new Statement object each time.
+const stmts = {
+  getUserById:  db.prepare('SELECT * FROM users WHERE id = ?'),
+  getSitePerm:  db.prepare('SELECT permissions FROM site_permissions WHERE user_id = ? AND site_id = ?'),
+};
+
 function requireAuth(req, res, next) {
   if (!req.session || !req.session.userId) {
     if (req.xhr || req.headers.accept?.includes('application/json')) {
@@ -7,7 +15,7 @@ function requireAuth(req, res, next) {
     }
     return res.redirect('/login');
   }
-  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.session.userId);
+  const user = stmts.getUserById.get(req.session.userId);
   if (!user) {
     req.session.destroy(() => {});
     return res.redirect('/login');
@@ -30,13 +38,11 @@ function requireSitePermission(...perms) {
     const siteId = req.params.siteId || req.params.id;
     if (!siteId) return res.status(400).json({ error: 'No site specified' });
 
-    const row = db.prepare(
-      'SELECT permissions FROM site_permissions WHERE user_id = ? AND site_id = ?'
-    ).get(req.user.id, siteId);
-
+    const row = stmts.getSitePerm.get(req.user.id, siteId);
     if (!row) return res.status(403).json({ error: 'No access to this site' });
 
-    const userPerms = JSON.parse(row.permissions);
+    let userPerms;
+    try { userPerms = JSON.parse(row.permissions); } catch { userPerms = []; }
     const hasAdmin = userPerms.includes('admin');
     const hasAll = perms.every(p => hasAdmin || userPerms.includes(p));
 
