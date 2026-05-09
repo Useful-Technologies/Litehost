@@ -122,6 +122,61 @@ a:hover { text-decoration: underline; }
 .stat-card .stat-value { font-size: 1.6rem; font-weight: 700; color: var(--text); }
 .stat-card .stat-sub { font-size: 0.75rem; color: var(--muted); margin-top: 3px; }
 
+/* Resource bars (CPU / RAM / Disk) */
+.resource-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+.resource-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+}
+.resource-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+.resource-label {
+  font-size: 0.73rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--muted);
+}
+.resource-pct {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text);
+  line-height: 1;
+}
+.resource-bar {
+  height: 5px;
+  background: var(--surface2);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 7px;
+}
+.resource-fill {
+  height: 100%;
+  border-radius: 3px;
+  background: var(--accent);
+  transition: width 0.6s ease, background 0.4s ease;
+}
+.resource-fill.warn   { background: var(--yellow); }
+.resource-fill.danger { background: var(--red); }
+.resource-sub {
+  font-size: 0.75rem;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Site list table */
 .table-wrap { overflow-x: auto; }
 table { width: 100%; border-collapse: collapse; }
