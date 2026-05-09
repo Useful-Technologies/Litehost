@@ -117,29 +117,33 @@ function isRunning(siteId) {
   return !!(proc && proc.exitCode === null && proc.signalCode === null);
 }
 
-// On panel restart: reconcile DB status with reality.
-// Sites marked 'running' that are no longer in our process map
-// can't be recovered (we lost the PID), so mark them stopped.
-// Sites with active port listeners get re-attached if possible.
+// On panel restart: reconcile DB status with reality, restarting any
+// sites that were running but whose process didn't survive the restart.
 function recoverProcesses() {
   const sites = db.prepare(
     "SELECT * FROM sites WHERE runtime IN ('node', 'custom') AND status = 'running'"
   ).all();
 
   for (const site of sites) {
-    if (!site.port) {
+    if (!site.port || !site.start_command) {
       db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
       continue;
     }
 
     if (isPortListening(site.port)) {
-      // Something is listening on the port — likely survived a soft restart.
-      // We can't attach to the process but mark it running so UI reflects reality.
-      console.log(`[pm] Site "${site.name}" port ${site.port} already listening — keeping running status`);
+      // Process survived the panel restart (orphaned child, still running).
+      // Keep it as-is — nothing to do.
+      console.log(`[pm] Site "${site.name}" still running on port ${site.port}`);
     } else {
-      // Port not listening, process is gone.
-      db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
-      console.log(`[pm] Site "${site.name}" marked stopped (process gone)`);
+      // Process is gone — restart it automatically
+      console.log(`[pm] Site "${site.name}" was running but process is gone — restarting…`);
+      try {
+        startSite(site);
+        console.log(`[pm] Site "${site.name}" restarted successfully`);
+      } catch (e) {
+        console.error(`[pm] Failed to restart site "${site.name}": ${e.message}`);
+        db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
+      }
     }
   }
 }
