@@ -919,25 +919,36 @@ function startSystemPoller() {
     const procEl = document.getElementById('procMemBody');
     if (procEl && s.procs) {
       const p = s.procs.panel;
-      const rows = [
+
+      // Litehost-managed processes (live, updated every 5 s)
+      const managed = [
         `<div class="proc-mem-row">
           <span class="proc-mem-name">⚡ Panel (Node.js)</span>
           <span class="proc-mem-rss">${fmtBytes(p.rss)} RSS</span>
-          <span class="proc-mem-heap" style="color:var(--muted)">${fmtBytes(p.heapUsed)} / ${fmtBytes(p.heapTotal)} heap</span>
+          <span class="proc-mem-heap">${fmtBytes(p.heapUsed)} / ${fmtBytes(p.heapTotal)} heap</span>
         </div>`,
       ];
       for (const site of s.procs.sites || []) {
-        // Try to resolve the site name from the already-loaded sites list
-        const siteName = (typeof currentSites !== 'undefined' && currentSites.find(x => x.id === site.siteId)?.name) || `site #${site.siteId}`;
-        rows.push(
-          `<div class="proc-mem-row">
-            <span class="proc-mem-name">🌐 ${siteName}</span>
-            <span class="proc-mem-rss">${fmtBytes(site.rss)} RSS</span>
-            <span class="proc-mem-heap" style="color:var(--muted)">pid ${site.pid}</span>
-          </div>`
-        );
+        const siteName = currentSites.find(x => x.id === site.siteId)?.name || `site #${site.siteId}`;
+        managed.push(`<div class="proc-mem-row">
+          <span class="proc-mem-name">🌐 ${siteName}</span>
+          <span class="proc-mem-rss">${fmtBytes(site.rss)} RSS</span>
+          <span class="proc-mem-heap">pid ${site.pid}</span>
+        </div>`);
       }
-      procEl.innerHTML = rows.join('');
+
+      // All top processes (updated every ~30 s) — shows what else is consuming RAM
+      const topRows = (s.top || []).map(proc =>
+        `<div class="proc-mem-row">
+          <span class="proc-mem-name" style="color:var(--muted)">${proc.name}</span>
+          <span class="proc-mem-rss">${fmtBytes(proc.rss)} RSS</span>
+          <span class="proc-mem-heap">pid ${proc.pid}</span>
+        </div>`
+      ).join('');
+
+      procEl.innerHTML = managed.join('') + (s.top?.length
+        ? `<div style="margin:10px 0 6px;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">All processes (top by RSS)</div>${topRows}`
+        : '');
     }
   }
 

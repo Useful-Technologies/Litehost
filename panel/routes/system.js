@@ -16,6 +16,8 @@ const stats = {
   uptime:  0,
   // Per-process RSS so the UI can show what's actually consuming memory
   procs:   { panel: { rss: 0, heapUsed: 0, heapTotal: 0 }, sites: [] },
+  // Top processes by RSS — updated every ~30 s alongside disk
+  top: [],
 };
 
 // ─── Zero-allocation /proc readers ────────────────────────────────────────────
@@ -158,13 +160,35 @@ function sampleDisk() {
 }
 
 // ─── Per-process memory ───────────────────────────────────────────────────────
-// Read RSS for a given PID from /proc/<pid>/status — cheap file read, no subprocess.
+// Read a single PID's RSS from /proc/<pid>/status.
 function pidRss(pid) {
   try {
     const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
     const m = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
     return m ? parseInt(m[1], 10) * 1024 : 0;
   } catch { return 0; }
+}
+
+// Scan every entry in /proc, read Name + VmRSS, return top N by RSS.
+// No subprocess — pure /proc reads.  Runs every ~30 s (same cadence as disk).
+function topProcs(n = 12) {
+  const list = [];
+  let entries;
+  try { entries = fs.readdirSync('/proc'); } catch { return list; }
+
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const status = fs.readFileSync(`/proc/${entry}/status`, 'utf8');
+      const nameMatch = status.match(/^Name:\s+(.+)/m);
+      const rssMatch  = status.match(/^VmRSS:\s+(\d+)/m);
+      if (nameMatch && rssMatch) {
+        list.push({ pid: parseInt(entry), name: nameMatch[1].trim(), rss: parseInt(rssMatch[1]) * 1024 });
+      }
+    } catch {}
+  }
+  list.sort((a, b) => b.rss - a.rss);
+  return list.slice(0, n);
 }
 
 function sampleProcs() {
@@ -176,7 +200,6 @@ function sampleProcs() {
 
   // Tracked hosted-site child processes
   const pids = pm.getTrackedPids(); // [{siteId, pid}]
-  // Rebuild the sites array in-place so the same array object is reused
   stats.procs.sites.length = 0;
   for (const { siteId, pid } of pids) {
     stats.procs.sites.push({ siteId, pid, rss: pidRss(pid) });
@@ -194,6 +217,7 @@ function startSampler(intervalMs = 5000) {
   sampleMemory();
   sampleDisk();
   sampleProcs();
+  stats.top = topProcs();
 
   setInterval(() => {
     sampleCpu();
@@ -204,7 +228,10 @@ function startSampler(intervalMs = 5000) {
     stats.loadAvg['5m']  = Math.round(l5  * 100) / 100;
     stats.loadAvg['15m'] = Math.round(l15 * 100) / 100;
     stats.uptime         = Math.round(os.uptime());
-    if (++_diskTick % 6 === 0) sampleDisk(); // ~every 30 s
+    if (++_diskTick % 6 === 0) {
+      sampleDisk();
+      stats.top = topProcs(); // refresh top processes every ~30 s
+    }
   }, intervalMs);
 }
 
