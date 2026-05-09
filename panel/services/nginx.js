@@ -197,22 +197,20 @@ function ensurePanelCert() {
   return { certFile, keyFile };
 }
 
-// Write /etc/nginx/conf.d/litehost.conf — the catch-all default_server that
-// forwards any unrecognised Host to the panel itself on both port 80 and 443.
-// Without a 443 default_server, nginx uses the first real site with listen 443
-// as the implicit default, meaning unmatched subdomains (e.g. panel.example.com
+// Write a default_server block for port 443 to sites-available and symlink it.
+// Without this, nginx uses the first real site that has listen 443 as the
+// implicit default — meaning unmatched subdomains (e.g. panel.example.com
 // via Cloudflare Full SSL) silently serve the wrong site.
+// We write to sites-available (not conf.d) because the panel user has
+// permission there; conf.d is root-owned.
 function writeDefaultConfig() {
   const panelPort = process.env.PANEL_PORT || 3000;
   const { certFile, keyFile } = ensurePanelCert();
 
+  // Only the 443 block — port 80 default_server already exists from install.sh
   const conf = `# Managed by Litehost — do not edit manually
-server_names_hash_bucket_size 128;
-
 server {
-    listen 80  default_server;
-    listen [::]:80  default_server;
-    listen 443 ssl  default_server;
+    listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
     server_name _;
 
@@ -230,7 +228,16 @@ server {
     }
 }
 `;
-  fs.writeFileSync('/etc/nginx/conf.d/litehost.conf', conf, 'utf8');
+
+  fs.mkdirSync(SITES_AVAILABLE, { recursive: true });
+  fs.mkdirSync(SITES_ENABLED,   { recursive: true });
+
+  const confPath    = path.join(SITES_AVAILABLE, 'litehost-_default.conf');
+  const enabledPath = path.join(SITES_ENABLED,   'litehost-_default.conf');
+
+  fs.writeFileSync(confPath, conf, 'utf8');
+  try { fs.unlinkSync(enabledPath); } catch {}
+  fs.symlinkSync(confPath, enabledPath);
 }
 
 module.exports = { writeSiteConfig, removeSiteConfig, reloadNginx, enableHTTPS, generateConfig, writeDefaultConfig };
