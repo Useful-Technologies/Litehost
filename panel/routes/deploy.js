@@ -37,7 +37,9 @@ router.post('/:token', (req, res) => {
     if (!signature) {
       return res.status(401).json({ error: 'Missing X-Hub-Signature-256 — set the webhook secret in GitHub' });
     }
-    if (!verifySignature(site.webhook_secret, req.rawBody, signature)) {
+    // req.body is a Buffer (set by express.raw registered in server.js before express.json)
+    const rawBody = req.body instanceof Buffer ? req.body : undefined;
+    if (!verifySignature(site.webhook_secret, rawBody, signature)) {
       return res.status(401).json({ error: 'Invalid signature — webhook secret mismatch' });
     }
   }

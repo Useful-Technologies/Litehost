@@ -18,11 +18,13 @@ if (SESSION_SECRET.startsWith('change-me-')) {
   console.warn('[warn] SESSION_SECRET not set — using random value. Sessions will not survive restarts.');
 }
 
-app.use(express.json({
-  limit: '10mb',
-  // Stash raw bytes on req so the deploy webhook can verify GitHub's HMAC signature
-  verify: (req, _res, buf) => { req.rawBody = buf; },
-}));
+// For the deploy webhook route, capture the raw body BEFORE express.json
+// consumes the stream — the HMAC signature must be verified against the
+// original bytes, not a re-serialised parse.  express.raw sets req._body=true
+// so express.json skips the route cleanly afterwards.
+app.use('/api/deploy', express.raw({ type: '*/*', limit: '10mb' }));
+
+app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use(session({
