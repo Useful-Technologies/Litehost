@@ -2,6 +2,7 @@ const express = require('express');
 const os = require('os');
 const fs = require('fs');
 const { requireAuth } = require('../middleware/auth');
+const pm = require('../services/process-manager');
 
 const router = express.Router();
 
@@ -13,6 +14,8 @@ const stats = {
   disk:    null,
   loadAvg: { '1m': 0, '5m': 0, '15m': 0 },
   uptime:  0,
+  // Per-process RSS so the UI can show what's actually consuming memory
+  procs:   { panel: { rss: 0, heapUsed: 0, heapTotal: 0 }, sites: [] },
 };
 
 // ─── Zero-allocation /proc readers ────────────────────────────────────────────
@@ -154,6 +157,32 @@ function sampleDisk() {
   } catch {}
 }
 
+// ─── Per-process memory ───────────────────────────────────────────────────────
+// Read RSS for a given PID from /proc/<pid>/status — cheap file read, no subprocess.
+function pidRss(pid) {
+  try {
+    const status = fs.readFileSync(`/proc/${pid}/status`, 'utf8');
+    const m = status.match(/^VmRSS:\s+(\d+)\s+kB/m);
+    return m ? parseInt(m[1], 10) * 1024 : 0;
+  } catch { return 0; }
+}
+
+function sampleProcs() {
+  // Panel process (this Node.js process)
+  const mu = process.memoryUsage();
+  stats.procs.panel.rss       = mu.rss;
+  stats.procs.panel.heapUsed  = mu.heapUsed;
+  stats.procs.panel.heapTotal = mu.heapTotal;
+
+  // Tracked hosted-site child processes
+  const pids = pm.getTrackedPids(); // [{siteId, pid}]
+  // Rebuild the sites array in-place so the same array object is reused
+  stats.procs.sites.length = 0;
+  for (const { siteId, pid } of pids) {
+    stats.procs.sites.push({ siteId, pid, rss: pidRss(pid) });
+  }
+}
+
 // ─── Background sampler ───────────────────────────────────────────────────────
 let _diskTick = 0;
 
@@ -164,10 +193,12 @@ function startSampler(intervalMs = 5000) {
   sampleCpu();    // seeds _prevIdle / _prevTotal
   sampleMemory();
   sampleDisk();
+  sampleProcs();
 
   setInterval(() => {
     sampleCpu();
     sampleMemory();
+    sampleProcs();
     const [l1, l5, l15] = os.loadavg(); // three numbers from libuv, no allocation
     stats.loadAvg['1m']  = Math.round(l1  * 100) / 100;
     stats.loadAvg['5m']  = Math.round(l5  * 100) / 100;
