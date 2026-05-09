@@ -72,9 +72,13 @@ function startSite(site) {
     proc = spawn('/bin/sh', ['-c', cmd], {
       cwd: siteDir,
       env: siteEnv,
-      detached: false,
+      // detached:true creates a new process group (PGID = proc.pid).
+      // This lets stopSite send SIGTERM to the entire group — catches
+      // gunicorn workers, Node cluster forks, and any other children.
+      detached: true,
       stdio: ['ignore', fd, fd],
     });
+    // Don't unref — we keep monitoring via the 'exit' event.
   } catch (err) {
     // spawn() threw synchronously — close fd now, it will never be closed by an event
     logLine(fd, `[ERROR] spawn failed: ${err.message}`);
@@ -107,12 +111,21 @@ function stopSite(siteId) {
   // Kill tracked child process
   const proc = processes.get(siteId);
   if (proc) {
-    try { proc.kill('SIGTERM'); } catch {}
+    try {
+      // Negative PID = kill the entire process group.
+      // Because we spawn with detached:true, proc.pid is the PGID leader,
+      // so -proc.pid terminates the shell, the app, AND every forked worker
+      // (gunicorn workers, Node cluster children, etc.) in one shot.
+      process.kill(-proc.pid, 'SIGTERM');
+    } catch {
+      // Group already gone or permissions issue — fall back to direct kill
+      try { proc.kill('SIGTERM'); } catch {}
+    }
     processes.delete(siteId);
   }
 
   // Also kill by port — catches processes that outlived a panel restart
-  // (recoverProcesses marks them running but can't track their PID)
+  // (recoverProcesses marks them running but can't track their PID/PGID)
   const site = db.prepare('SELECT port FROM sites WHERE id = ?').get(siteId);
   if (site?.port) {
     try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
