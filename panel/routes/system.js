@@ -6,6 +6,25 @@ const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
+// Disk stat is expensive (spawns df) and changes slowly — cache for 30 s.
+let _diskCache = null;
+let _diskCacheAt = 0;
+const DISK_TTL = 30_000;
+
+function getDisk() {
+  if (_diskCache && Date.now() - _diskCacheAt < DISK_TTL) return _diskCache;
+  try {
+    const out = execSync('df -k --output=size,used,avail /', { stdio: 'pipe', timeout: 5000 })
+      .toString().trim().split('\n');
+    if (out[1]) {
+      const [size, used, avail] = out[1].trim().split(/\s+/).map(Number);
+      _diskCache = { total: size * 1024, used: used * 1024, free: avail * 1024 };
+      _diskCacheAt = Date.now();
+    }
+  } catch {}
+  return _diskCache;
+}
+
 // Read the first "cpu" line from /proc/stat and return {idle, total}.
 // idle  = idle + iowait fields
 // total = sum of all fields
@@ -55,17 +74,8 @@ router.get('/stats', requireAuth, async (req, res) => {
     if (match) freeMem = parseInt(match[1], 10) * 1024;
   } catch {}
 
-  // ── Disk (root partition) ──────────────────────────────────────────────────
-  let disk = null;
-  try {
-    // df -k prints 1 KiB blocks; --output gives exactly the columns we want
-    const out = execSync('df -k --output=size,used,avail /', { stdio: 'pipe', timeout: 5000 })
-      .toString().trim().split('\n');
-    if (out[1]) {
-      const [size, used, avail] = out[1].trim().split(/\s+/).map(Number);
-      disk = { total: size * 1024, used: used * 1024, free: avail * 1024 };
-    }
-  } catch {}
+  // ── Disk (root partition, cached 30 s) ────────────────────────────────────
+  const disk = getDisk();
 
   // ── Load average ───────────────────────────────────────────────────────────
   const [l1, l5, l15] = os.loadavg();
