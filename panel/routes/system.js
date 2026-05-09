@@ -1,70 +1,143 @@
 const express = require('express');
 const os = require('os');
 const fs = require('fs');
-const { execSync } = require('child_process');
 const { requireAuth } = require('../middleware/auth');
 
 const router = express.Router();
 
 // ─── Shared state ─────────────────────────────────────────────────────────────
-// The background sampler writes here; the API endpoint just reads it.
-// Initialised to null so the UI can show "—" until the first sample lands.
+// Written by the background sampler, read by the route handler.
 const stats = {
-  cpu:    { percent: null },
-  memory: { total: 0, used: 0, free: 0 },
-  disk:   null,
+  cpu:     { percent: null },
+  memory:  { total: 0, used: 0, free: 0 },
+  disk:    null,
   loadAvg: { '1m': 0, '5m': 0, '15m': 0 },
-  uptime: 0,
+  uptime:  0,
 };
 
-// ─── CPU ──────────────────────────────────────────────────────────────────────
-// Keep the previous /proc/stat snapshot so each tick calculates a true delta.
-// A 5-second window is more accurate than the old 250 ms per-request sample.
-let _prevStat = null;
+// ─── Zero-allocation /proc readers ────────────────────────────────────────────
+// Open /proc/stat and /proc/meminfo once.  Linux's pread() (readSync with an
+// explicit position) re-generates data from the kernel on every call so the
+// fd never goes stale.  A single Buffer is reused across every tick — the
+// only per-tick allocations are three small numbers written back into stats.
 
-function readProcStat() {
-  try {
-    const line = fs.readFileSync('/proc/stat', 'utf8').split('\n')[0];
-    const nums = line.trim().split(/\s+/).slice(1).map(Number);
-    // idle = idle + iowait fields (indices 3, 4)
-    return { idle: (nums[3] || 0) + (nums[4] || 0), total: nums.reduce((a, b) => a + b, 0) };
-  } catch { return null; }
+const _buf   = Buffer.allocUnsafe(8192); // shared; never replaced
+let _statFd  = -1;
+let _memFd   = -1;
+
+// CPU delta state — plain numbers on the module scope, no object churn
+let _prevIdle  = 0;
+let _prevTotal = 0;
+
+function openFd(path) {
+  try { return fs.openSync(path, 'r'); } catch { return -1; }
 }
 
+// Parse an unsigned decimal integer starting at buf[pos]; advance pos past digits.
+// Returns [value, newPos].
+function scanUint(buf, pos, end) {
+  let v = 0;
+  while (pos < end && buf[pos] >= 48 && buf[pos] <= 57) v = v * 10 + buf[pos++] - 48;
+  return [v, pos];
+}
+
+// ── CPU ───────────────────────────────────────────────────────────────────────
 function sampleCpu() {
-  const cur = readProcStat();
-  if (cur && _prevStat) {
-    const dt = cur.total - _prevStat.total;
-    const di = cur.idle  - _prevStat.idle;
-    stats.cpu.percent = dt > 0 ? Math.max(0, Math.min(100, Math.round((1 - di / dt) * 100))) : 0;
+  if (_statFd < 0) _statFd = openFd('/proc/stat');
+  if (_statFd < 0) return;
+
+  let n;
+  try { n = fs.readSync(_statFd, _buf, 0, 4096, 0); }
+  catch { try { fs.closeSync(_statFd); } catch {} _statFd = -1; return; }
+
+  // First line: "cpu  <user> <nice> <system> <idle> <iowait> <irq> ..."
+  // Skip "cpu" label + spaces to reach the first digit.
+  let pos = 0;
+  while (pos < n && (_buf[pos] < 48 || _buf[pos] > 57)) pos++;
+
+  let idle = 0, total = 0, field = 0;
+  while (pos < n && _buf[pos] !== 10 /* \n */) {
+    while (pos < n && _buf[pos] === 32) pos++; // skip spaces
+    if (pos >= n || _buf[pos] === 10) break;
+    const [num, next] = scanUint(_buf, pos, n);
+    pos = next;
+    if (field === 3 || field === 4) idle += num; // idle + iowait
+    total += num;
+    field++;
   }
-  if (cur) _prevStat = cur;
+
+  if (_prevTotal > 0) {
+    const dt = total - _prevTotal;
+    const di = idle  - _prevIdle;
+    if (dt > 0) stats.cpu.percent = Math.max(0, Math.min(100, Math.round((1 - di / dt) * 100)));
+  }
+  _prevIdle  = idle;
+  _prevTotal = total;
 }
 
-// ─── Memory ───────────────────────────────────────────────────────────────────
+// ── Memory ────────────────────────────────────────────────────────────────────
+// ASCII codes for the two keys we care about — compared byte-by-byte, no String.
+// "MemTotal:"     77 101 109 84 111 116 97 108 58  (9 bytes)
+// "MemAvailable:" 77 101 109 65 118 97 105 108 97 98 108 101 58  (13 bytes)
+
 function sampleMemory() {
-  const total = os.totalmem();
-  let free = os.freemem();
-  try {
-    const m = fs.readFileSync('/proc/meminfo', 'utf8').match(/^MemAvailable:\s+(\d+)\s+kB/m);
-    if (m) free = parseInt(m[1], 10) * 1024;
-  } catch {}
-  stats.memory = { total, used: total - free, free };
+  if (_memFd < 0) _memFd = openFd('/proc/meminfo');
+  if (_memFd < 0) {
+    // Fallback: os module (less accurate, but no crash)
+    const t = os.totalmem(), f = os.freemem();
+    stats.memory.total = t; stats.memory.used = t - f; stats.memory.free = f;
+    return;
+  }
+
+  let n;
+  try { n = fs.readSync(_memFd, _buf, 0, 8192, 0); }
+  catch { try { fs.closeSync(_memFd); } catch {} _memFd = -1; return; }
+
+  let memTotal = 0, memAvail = 0, pos = 0;
+
+  while (pos < n && !(memTotal && memAvail)) {
+    // Fast-path: both lines start with "Mem" (77,101,109)
+    if (_buf[pos] === 77 && _buf[pos + 1] === 101 && _buf[pos + 2] === 109) {
+      if (_buf[pos + 3] === 84) {
+        // "MemTotal:" — skip 9 bytes to the value
+        pos += 9;
+        while (pos < n && _buf[pos] === 32) pos++;
+        let [v, p] = scanUint(_buf, pos, n);
+        memTotal = v * 1024; pos = p;
+      } else if (_buf[pos + 3] === 65) {
+        // "MemAvailable:" — skip 13 bytes to the value
+        pos += 13;
+        while (pos < n && _buf[pos] === 32) pos++;
+        let [v, p] = scanUint(_buf, pos, n);
+        memAvail = v * 1024; pos = p;
+      }
+    }
+    // Advance to the next line
+    while (pos < n && _buf[pos] !== 10) pos++;
+    pos++;
+  }
+
+  if (memTotal > 0) {
+    stats.memory.total = memTotal;
+    stats.memory.used  = memTotal - memAvail;
+    stats.memory.free  = memAvail;
+  }
 }
 
-// ─── Disk ─────────────────────────────────────────────────────────────────────
-// Prefer fs.statfsSync (Node 19+ — pure syscall, no subprocess).
-// Fall back to execSync('df') on older Node; disk changes slowly so this
-// only runs once every 6 ticks (every ~30 s at a 5-second interval).
+// ── Disk ──────────────────────────────────────────────────────────────────────
+// Node 19+: fs.statfsSync() is a direct syscall — no subprocess, no allocation.
+// Older Node: fall back to execSync('df'), run infrequently from the background loop.
+const { execSync } = require('child_process');
+
 function sampleDisk() {
   if (typeof fs.statfsSync === 'function') {
     try {
       const s = fs.statfsSync('/');
-      stats.disk = {
-        total: s.blocks * s.bsize,
-        used:  (s.blocks - s.bfree) * s.bsize,
-        free:  s.bavail * s.bsize,
-      };
+      // Mutate in place — no object created after the first sample
+      if (!stats.disk) stats.disk = { total: 0, used: 0, free: 0 };
+      stats.disk.total = s.blocks * s.bsize;
+      stats.disk.used  = (s.blocks - s.bfree) * s.bsize;
+      stats.disk.free  = s.bavail * s.bsize;
       return;
     } catch {}
   }
@@ -73,7 +146,10 @@ function sampleDisk() {
       .toString().trim().split('\n');
     if (out[1]) {
       const [sz, used, avail] = out[1].trim().split(/\s+/).map(Number);
-      stats.disk = { total: sz * 1024, used: used * 1024, free: avail * 1024 };
+      if (!stats.disk) stats.disk = { total: 0, used: 0, free: 0 };
+      stats.disk.total = sz * 1024;
+      stats.disk.used  = used  * 1024;
+      stats.disk.free  = avail * 1024;
     }
   } catch {}
 }
@@ -82,28 +158,28 @@ function sampleDisk() {
 let _diskTick = 0;
 
 function startSampler(intervalMs = 5000) {
-  // Seed the CPU baseline before the first tick so we have a delta immediately
-  _prevStat = readProcStat();
+  // Seed CPU baseline and get first disk reading before the interval fires
+  _statFd = openFd('/proc/stat');
+  _memFd  = openFd('/proc/meminfo');
+  sampleCpu();    // seeds _prevIdle / _prevTotal
   sampleMemory();
   sampleDisk();
 
   setInterval(() => {
     sampleCpu();
     sampleMemory();
-    const [l1, l5, l15] = os.loadavg();
-    stats.loadAvg = { '1m': +l1.toFixed(2), '5m': +l5.toFixed(2), '15m': +l15.toFixed(2) };
-    stats.uptime  = Math.round(os.uptime());
-
-    // Disk: every 6 ticks (~30 s). No need to check every 5 s.
-    if (++_diskTick % 6 === 0) sampleDisk();
+    const [l1, l5, l15] = os.loadavg(); // three numbers from libuv, no allocation
+    stats.loadAvg['1m']  = Math.round(l1  * 100) / 100;
+    stats.loadAvg['5m']  = Math.round(l5  * 100) / 100;
+    stats.loadAvg['15m'] = Math.round(l15 * 100) / 100;
+    stats.uptime         = Math.round(os.uptime());
+    if (++_diskTick % 6 === 0) sampleDisk(); // ~every 30 s
   }, intervalMs);
 }
 
-// Kick off as soon as the module is loaded — no change needed in server.js
 startSampler();
 
 // ─── Route ────────────────────────────────────────────────────────────────────
-// Purely synchronous — just serialise the in-memory object.
 router.get('/stats', requireAuth, (req, res) => res.json(stats));
 
 module.exports = router;
