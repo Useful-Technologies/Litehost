@@ -33,6 +33,10 @@ case "${1:-}" in
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
 
+    # Pre-declare so set -u never complains regardless of which branch runs
+    TARBALL=""
+    TAG=""
+
     if [[ "$DEV" == true ]]; then
       echo "  [dev] Cloning latest commit from main branch..."
       if ! git clone --depth=1 "$REPO" "$TMP"; then
