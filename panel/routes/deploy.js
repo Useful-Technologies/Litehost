@@ -26,7 +26,7 @@ function verifySignature(secret, rawBody, signature) {
 // Public endpoint — authenticated by deploy token in URL.
 // If the request carries X-Hub-Signature-256 (GitHub webhook), the HMAC
 // is verified against the site's webhook_secret before deploying.
-router.post('/:token', (req, res) => {
+router.post('/:token', async (req, res) => {
   const site = db.prepare('SELECT * FROM sites WHERE deploy_token = ?').get(req.params.token);
   if (!site) return res.status(404).json({ error: 'Invalid deploy token' });
   if (!site.git_repo) return res.status(400).json({ error: 'No git repository configured' });
@@ -67,6 +67,8 @@ router.post('/:token', (req, res) => {
 
     if (['node', 'custom'].includes(site.runtime)) {
       pm.stopSite(site.id);
+      // Brief pause to let the kernel release the port after SIGKILL
+      await new Promise(r => setTimeout(r, 500));
       const pid = pm.startSite(site);
       log.push(`Process restarted (pid ${pid})`);
     } else {

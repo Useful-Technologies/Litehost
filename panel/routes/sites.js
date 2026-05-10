@@ -357,7 +357,7 @@ router.post('/:id/rotate-webhook-secret', requireAuth, requireOwner, (req, res) 
 });
 
 // Git deploy
-router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), (req, res) => {
+router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), async (req, res) => {
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
   if (!site.git_repo) return res.status(400).json({ error: 'No git repository configured' });
@@ -388,6 +388,8 @@ router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), (re
     // Restart the process (node/custom) or reload nginx (static/php)
     if (['node', 'custom'].includes(site.runtime)) {
       pm.stopSite(site.id);
+      // Brief pause to let the kernel release the port after SIGKILL
+      await new Promise(r => setTimeout(r, 500));
       const pid = pm.startSite(site);
       log.push(`Restarted process (pid ${pid})`);
     } else {
