@@ -7,6 +7,53 @@ const processes = new Map();
 const PORT_START = 4000;
 const PORT_END = 5000;
 
+// ─── Process-tree kill ────────────────────────────────────────────────────────
+// Walk /proc to find every descendant of rootPid, regardless of what process
+// group each child is in.  Some frameworks (gunicorn workers, some Node cluster
+// setups) call os.setpgrp() / setpgid(0,0) to leave the parent's process group,
+// so process.kill(-pgid) only reaches processes that stayed in that group.
+// PPid in /proc/<pid>/status is the ground truth for the actual parent—child
+// relationship and cannot be faked.
+
+function buildChildMap() {
+  const childMap = new Map(); // ppid -> [pid, ...]
+  let entries;
+  try { entries = fs.readdirSync('/proc'); } catch { return childMap; }
+  for (const entry of entries) {
+    if (!/^\d+$/.test(entry)) continue;
+    try {
+      const status = fs.readFileSync(`/proc/${entry}/status`, 'utf8');
+      const m = status.match(/^PPid:\s+(\d+)/m);
+      if (!m) continue;
+      const ppid = parseInt(m[1]);
+      const pid  = parseInt(entry);
+      if (!childMap.has(ppid)) childMap.set(ppid, []);
+      childMap.get(ppid).push(pid);
+    } catch {}
+  }
+  return childMap;
+}
+
+// Returns [rootPid, ...all descendants] in BFS order, reversed so that
+// leaf processes are signalled first and the root last.
+function collectTree(rootPid, childMap) {
+  const result = [];
+  const queue  = [rootPid];
+  while (queue.length) {
+    const pid = queue.shift();
+    result.push(pid);
+    for (const child of (childMap.get(pid) || [])) queue.push(child);
+  }
+  return result.reverse(); // leaves first, root last
+}
+
+function killTree(rootPid, signal = 'SIGTERM') {
+  const childMap = buildChildMap();
+  for (const pid of collectTree(rootPid, childMap)) {
+    try { process.kill(pid, signal); } catch {}
+  }
+}
+
 function getUsedPorts() {
   const sites = db.prepare('SELECT port FROM sites WHERE port IS NOT NULL').all();
   return new Set(sites.map(s => s.port));
@@ -108,24 +155,18 @@ function startSite(site) {
 }
 
 function stopSite(siteId) {
-  // Kill tracked child process
+  // Kill the tracked process and every descendant.
+  // killTree() walks /proc PPid entries so it catches workers that called
+  // setpgrp() / setpgid(0,0) and escaped the original process group —
+  // e.g. gunicorn workers, Node cluster children, etc.
   const proc = processes.get(siteId);
   if (proc) {
-    try {
-      // Negative PID = kill the entire process group.
-      // Because we spawn with detached:true, proc.pid is the PGID leader,
-      // so -proc.pid terminates the shell, the app, AND every forked worker
-      // (gunicorn workers, Node cluster children, etc.) in one shot.
-      process.kill(-proc.pid, 'SIGTERM');
-    } catch {
-      // Group already gone or permissions issue — fall back to direct kill
-      try { proc.kill('SIGTERM'); } catch {}
-    }
+    killTree(proc.pid);
     processes.delete(siteId);
   }
 
-  // Also kill by port — catches processes that outlived a panel restart
-  // (recoverProcesses marks them running but can't track their PID/PGID)
+  // Also kill by port — catches the port-holder for sites that outlived a
+  // panel restart (recoverProcesses has no PID to walk from).
   const site = db.prepare('SELECT port FROM sites WHERE id = ?').get(siteId);
   if (site?.port) {
     try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
