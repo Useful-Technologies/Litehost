@@ -70,8 +70,11 @@ function createCgroup(siteName, memLimitMb, cpuQuotaPct) {
   const cgPath = cgroupPath(siteName);
   try { fs.mkdirSync(cgPath, { recursive: true }); } catch {}
 
-  // memory.max: bytes, or "max" for unlimited
-  cgWrite(cgPath, 'memory.max', memLimitMb ? memLimitMb * 1024 * 1024 : 'max');
+  // memory.high: soft limit — kernel throttles the cgroup when exceeded but
+  // does NOT kill the process.  memory.max stays at "max" so there is no
+  // hard OOM kill.
+  cgWrite(cgPath, 'memory.high', memLimitMb ? memLimitMb * 1024 * 1024 : 'max');
+  cgWrite(cgPath, 'memory.max',  'max');
 
   // cpu.max: "<quota_us> <period_us>" or "max <period_us>"
   if (cpuQuotaPct && cpuQuotaPct > 0 && cpuQuotaPct <= 100) {

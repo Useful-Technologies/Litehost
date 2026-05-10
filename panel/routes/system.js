@@ -6,8 +6,7 @@ const pm = require('../services/process-manager');
 const cgroup = require('../services/cgroup');
 const db = require('../db/database');
 
-// Cached statement for OOM status update and site name lookup
-const stmtSetOOM    = db.prepare("UPDATE sites SET status = 'oom_killed' WHERE id = ? AND status = 'running'");
+// Cached statement for site name/limit lookup
 const stmtGetSiteId = db.prepare('SELECT id, name, mem_limit_mb FROM sites WHERE id = ?');
 
 const router = express.Router();
@@ -240,14 +239,6 @@ function sampleProcs() {
       memLimit: row?.mem_limit_mb ? row.mem_limit_mb * 1024 * 1024 : null,
     });
 
-    // OOM detection: if memory.events shows oom_kill > 0, the site was
-    // killed by the kernel for exceeding its memory limit
-    if (siteName) {
-      const events = cgroup.readCgroupEvents(siteName);
-      if (events.oom_kill > 0) {
-        stmtSetOOM.run(siteId);
-      }
-    }
   }
 }
 
