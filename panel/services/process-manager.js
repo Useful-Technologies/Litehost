@@ -151,27 +151,32 @@ function startSite(site) {
 
 // ─── stopSite ─────────────────────────────────────────────────────────────────
 function stopSite(siteId) {
-  // Primary: cgroup.kill sends SIGKILL to every process in the hierarchy
-  // simultaneously — no worker can fork-and-escape before the signal lands,
-  // regardless of what setpgrp() / setpgid() tricks it uses.
   const row = stmts.getSiteName.get(siteId);
-  if (row?.name) {
-    cgroup.killCgroup(row.name);
-    cgroup.removeCgroup(row.name);
-  } else if (processes.has(siteId)) {
-    // Name not found — fall back to direct kill of tracked proc
-    try { processes.get(siteId).kill('SIGTERM'); } catch {}
+  const siteName = row?.name;
+
+  // Primary: kill every process owned by the site's Linux user.
+  // pkill -KILL -u lh-<name> is immune to setpgrp/setpgid tricks and catches
+  // all workers regardless of how they forked.  Exit code 1 just means no
+  // processes were found — not an error.
+  if (siteName) {
+    const sysUser = `lh-${siteName}`.slice(0, 31);
+    try { execSync(`pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
   }
 
-  processes.delete(siteId);
+  // Secondary: nuke the cgroup too (catches anything that somehow isn't
+  // owned by the site user), then remove it so startSite gets a clean slate.
+  if (siteName) {
+    cgroup.killCgroup(siteName);
+    cgroup.removeCgroup(siteName);
+  }
 
-  // Belt-and-suspenders: kill whatever is still listening on the port.
-  // This covers sites that outlived a panel restart (no cgroup state in memory).
+  // Belt-and-suspenders: free the port in case anything is still bound.
   const site = stmts.getSitePort.get(siteId);
   if (site?.port) {
     try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
   }
 
+  processes.delete(siteId);
   stmts.setStopped.run(siteId);
 }
 
