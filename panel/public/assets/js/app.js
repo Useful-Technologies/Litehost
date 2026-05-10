@@ -414,7 +414,7 @@ function siteSettingsTab(site) {
             <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value='512'">512 MB</button>
             <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value=''">Unlimited</button>
           </div>
-          <div class="form-hint">OOM killer activates if the site exceeds this limit. Leave blank for no limit.</div>
+          <div class="form-hint">The kernel throttles the site when it exceeds this limit (soft limit — no kill). Leave blank for no limit.</div>
         </div>
         <div class="form-group">
           <label>CPU Quota (%)</label>
