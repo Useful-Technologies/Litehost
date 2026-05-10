@@ -1057,11 +1057,10 @@ async function manualCheckUpgrade() {
     return;
   }
 
-  // If on the dashboard the upgrade card may already be there — re-render it
+  // Pass the already-fetched info directly — no second API call that could hit stale cache
   const wrap = document.getElementById('upgradeCardWrap');
   if (wrap) {
-    // Re-use the existing render logic
-    await checkAndRenderUpgradeCard();
+    renderUpgradeCard(wrap, info);
   } else {
     toast.info(`Litehost ${info.latest} is available — go to the dashboard to update`);
   }
@@ -1073,10 +1072,13 @@ async function checkAndRenderUpgradeCard() {
 
   let info;
   try { info = await api.get('/upgrade/check'); }
-  catch { return; } // silently ignore if GitHub unreachable
+  catch { return; }
 
-  if (!info.updateAvailable) return; // nothing to show
+  if (!info.updateAvailable) return;
+  renderUpgradeCard(wrap, info);
+}
 
+function renderUpgradeCard(wrap, info) {
   wrap.innerHTML = `
     <div class="upgrade-card">
       <div class="upgrade-card-icon">🚀</div>
