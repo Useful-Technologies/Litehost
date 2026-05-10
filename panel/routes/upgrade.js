@@ -88,7 +88,7 @@ router.get('/check', requireAuth, async (req, res) => {
 });
 
 // POST /api/upgrade/run — streams upgrade log via Server-Sent Events
-router.post('/run', requireAuth, requireOwner, (req, res) => {
+router.post('/run', requireAuth, requireOwner, async (req, res) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
@@ -104,10 +104,27 @@ router.post('/run', requireAuth, requireOwner, (req, res) => {
 
   send('Starting Litehost upgrade…');
 
-  // Run upgrade steps in a child process so we don't block the event loop
+  // Resolve the release tarball URL before building the step list so we can
+  // show the version and avoid a git dependency on the production server.
+  let tarballUrl, tag;
+  try {
+    const release = await fetchLatestRelease();
+    tarballUrl = release.tarball_url;
+    tag = release.tag_name || 'latest';
+    if (!tarballUrl) throw new Error('No tarball_url in GitHub release response');
+    send(`Downloading release ${tag}…`);
+  } catch (e) {
+    done(false, `Could not fetch release info from GitHub: ${e.message}`);
+    return;
+  }
+
+  const tmpDir = `/tmp/lh-upgrade-${Date.now()}`;
+
   const steps = [
-    `git -C ${LITEHOST_DIR} fetch origin`,
-    `git -C ${LITEHOST_DIR} reset --hard origin/main`,
+    `mkdir -p ${tmpDir}`,
+    `curl -fsSL "${tarballUrl}" | tar -xz -C ${tmpDir} --strip-components=1`,
+    `cp -r ${tmpDir}/panel/. ${PANEL_DIR}/`,
+    `rm -rf ${tmpDir}`,
     `npm install --prefix ${PANEL_DIR} --production --no-audit`,
     `sudo systemctl restart litehost`,
   ];

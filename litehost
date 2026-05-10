@@ -3,6 +3,7 @@ set -euo pipefail
 
 PANEL_DIR="/opt/litehost/panel"
 REPO="https://github.com/Useful-Technologies/Litehost"
+GITHUB_API="https://api.github.com/repos/Useful-Technologies/Litehost/releases/latest"
 
 case "${1:-}" in
   start)
@@ -25,44 +26,76 @@ case "${1:-}" in
     ;;
   update)
     [[ $EUID -ne 0 ]] && echo "Run as root: sudo litehost update" && exit 1
-    echo "Updating Litehost..."
+
+    DEV=false
+    [[ "${2:-}" == "--dev" ]] && DEV=true
 
     TMP=$(mktemp -d)
     trap 'rm -rf "$TMP"' EXIT
 
-    echo "  [1/5] Cloning latest from GitHub..."
-    if ! git clone --depth=1 "$REPO" "$TMP"; then
-      echo "  FAILED: git clone failed. Check network and try again."
-      exit 1
+    if [[ "$DEV" == true ]]; then
+      echo "  [dev] Cloning latest commit from main branch..."
+      if ! git clone --depth=1 "$REPO" "$TMP"; then
+        echo "  FAILED: git clone failed. Check network and try again."
+        exit 1
+      fi
+      TAG="main (latest commit)"
+    else
+      echo "  Fetching latest release info from GitHub..."
+      RELEASE=$(curl -sf "$GITHUB_API" || echo "")
+      if [[ -z "$RELEASE" ]]; then
+        echo "  FAILED: could not reach GitHub API. Check network and try again."
+        exit 1
+      fi
+
+      # Parse tarball URL and tag using python3 (reliable, no jq required)
+      TARBALL=$(echo "$RELEASE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tarball_url',''))" 2>/dev/null || echo "")
+      TAG=$(echo     "$RELEASE" | python3 -c "import sys,json; d=json.load(sys.stdin); print(d.get('tag_name',''))"    2>/dev/null || echo "")
+
+      if [[ -z "$TARBALL" ]]; then
+        echo "  FAILED: no releases found. Publish a release on GitHub first,"
+        echo "  or use --dev to install the latest commit instead."
+        exit 1
+      fi
+
+      echo "  Downloading release $TAG..."
+      if ! curl -fsSL "$TARBALL" | tar -xz -C "$TMP" --strip-components=1; then
+        echo "  FAILED: download or extraction failed."
+        exit 1
+      fi
     fi
 
-    echo "  [2/5] Copying panel files..."
+    echo "  [1/4] Copying panel files..."
     cp -r "$TMP/panel/." "$PANEL_DIR/"
     chown -R litehost:litehost "$PANEL_DIR"
 
-    echo "  [3/5] Installing dependencies..."
+    echo "  [2/4] Installing dependencies..."
     cd "$PANEL_DIR"
     npm install --omit=dev --quiet
     chown -R litehost:litehost "$PANEL_DIR/node_modules"
 
-    echo "  [4/5] Updating CLI and nginx settings..."
+    echo "  [3/4] Updating CLI..."
     cp "$TMP/litehost" /usr/local/bin/litehost
     chmod +x /usr/local/bin/litehost
     sed -i 's/\r//' /usr/local/bin/litehost
-    echo 'server_names_hash_bucket_size 128;' > /etc/nginx/conf.d/litehost.conf
-    nginx -t 2>/dev/null && systemctl reload nginx || echo "  WARNING: nginx reload skipped (config test failed)"
 
-    echo "  [5/5] Restarting service..."
+    echo "  [4/4] Restarting service..."
+    systemctl daemon-reload
     systemctl restart litehost
     sleep 1
+
     if systemctl is-active --quiet litehost; then
-      echo "Done. Litehost is up to date and running."
+      echo ""
+      echo "Done. Litehost $TAG is running."
     else
-      echo "WARNING: service may not be healthy - run: litehost logs"
+      echo "WARNING: service may not be healthy — run: litehost logs"
     fi
     ;;
   *)
-    echo "Usage: litehost {start|stop|restart|status|logs|update}"
+    echo "Usage: litehost {start|stop|restart|status|logs|update [--dev]}"
+    echo ""
+    echo "  update        Install the latest stable release from GitHub"
+    echo "  update --dev  Install the latest commit from the main branch"
     exit 1
     ;;
 esac
