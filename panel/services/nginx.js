@@ -260,13 +260,15 @@ function ensurePanelCert() {
   const certFile = `${PANEL_CERT_DIR}/cert.pem`;
   const keyFile  = `${PANEL_CERT_DIR}/key.pem`;
   if (fs.existsSync(certFile) && fs.existsSync(keyFile)) return { certFile, keyFile };
-  fs.mkdirSync(PANEL_CERT_DIR, { recursive: true, mode: 0o700 });
+  fs.mkdirSync(PANEL_CERT_DIR, { recursive: true, mode: 0o755 }); // nginx must traverse
   execSync(
     `openssl req -x509 -nodes -newkey rsa:2048` +
     ` -keyout ${keyFile} -out ${certFile}` +
     ` -days 3650 -subj '/CN=litehost-panel'`,
     { stdio: 'pipe' }
   );
+  try { fs.chmodSync(certFile, 0o644); } catch {} // nginx reads cert
+  try { fs.chmodSync(keyFile,  0o600); } catch {} // private key stays locked
   return { certFile, keyFile };
 }
 

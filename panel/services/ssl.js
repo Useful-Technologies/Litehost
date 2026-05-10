@@ -32,9 +32,9 @@ function wrapKey(key) {
 
 function installCert(id, cert, key) {
   const dir = `${CERT_DIR}/${id}`;
-  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  fs.writeFileSync(certPath(id), cert.trim() + '\n', { mode: 0o600 });
-  fs.writeFileSync(keyPath(id),  wrapKey(key),        { mode: 0o600 });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o755 }); // nginx must traverse
+  fs.writeFileSync(certPath(id), cert.trim() + '\n', { mode: 0o644 }); // nginx reads cert
+  fs.writeFileSync(keyPath(id),  wrapKey(key),        { mode: 0o600 }); // private key stays locked
 }
 
 function removeCert(id) {
