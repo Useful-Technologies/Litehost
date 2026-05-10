@@ -132,9 +132,12 @@ mkdir -p /etc/hostctl/certs
 chown -R "${LITEHOST_USER}:www-data" "$SITES_DIR"
 chmod -R 750 "$SITES_DIR"
 
-# Config + log dirs: litehost owns, others cannot read (secrets inside)
+# Config dir: world-traversable so nginx can reach cert files inside subdirs.
+# Sensitive files (.env, .db, sessions.db, owner-credentials.txt) are locked
+# to 600 individually — nginx never needs to read them.
 chown -R "${LITEHOST_USER}:${LITEHOST_USER}" "$CONF_DIR" "$LOG_DIR" /tmp/litehost-uploads
-chmod 750 "$CONF_DIR" "$LOG_DIR"
+chmod 755 "$CONF_DIR"
+chmod 750 "$LOG_DIR"
 
 log "Directories created"
 
