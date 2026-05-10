@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Auto-bump patch version in panel/VERSION whenever panel/ files are staged.
+# Install once with: git config core.hooksPath .githooks
+
+VERSION_FILE="panel/VERSION"
+
+# Only bump if any panel/ file is staged
+if git diff --cached --name-only | grep -q '^panel/'; then
+  current=$(cat "$VERSION_FILE" 2>/dev/null | tr -d '[:space:]')
+  if [[ "$current" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+    major="${BASH_REMATCH[1]}"
+    minor="${BASH_REMATCH[2]}"
+    patch="${BASH_REMATCH[3]}"
+    new_version="${major}.${minor}.$((patch + 1))"
+    echo "$new_version" > "$VERSION_FILE"
+    git add "$VERSION_FILE"
+    echo "[version] Bumped to $new_version"
+  fi
+fi
