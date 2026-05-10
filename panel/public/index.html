@@ -33,7 +33,10 @@
     <div class="sidebar-footer">
       <strong id="sidebarUsername">—</strong>
       <span class="role-badge" id="sidebarRole">—</span>
-      <div style="margin-top:10px">
+      <div style="margin-top:10px;display:flex;flex-direction:column;gap:6px" class="owner-only">
+        <button class="btn btn-sm btn-secondary" id="checkUpdateBtn" onclick="manualCheckUpgrade()" style="width:100%">🔄 Check for updates</button>
+      </div>
+      <div style="margin-top:6px">
         <button class="btn btn-sm btn-secondary" onclick="logout()" style="width:100%">Sign out</button>
       </div>
     </div>

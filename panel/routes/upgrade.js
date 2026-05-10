@@ -68,9 +68,10 @@ function semverGt(a, b) {
 router.get('/check', requireAuth, async (req, res) => {
   const current = getCurrentVersion();
 
-  // Serve from cache if fresh
+  // Serve from cache if fresh (skip cache when ?bust is present)
   const now = Date.now();
-  if (_cachedCheck && now - _checkFetchedAt < CHECK_TTL_MS) {
+  const bust = 'bust' in req.query;
+  if (!bust && _cachedCheck && now - _checkFetchedAt < CHECK_TTL_MS) {
     return res.json({ ...(_cachedCheck), current });
   }
 
