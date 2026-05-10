@@ -1042,6 +1042,31 @@ async function saveResourceLimits(siteId) {
 }
 
 // ─── Upgrade card ────────────────────────────────────────────────────────────
+async function manualCheckUpgrade() {
+  const btn = document.getElementById('checkUpdateBtn');
+  if (btn) { btn.textContent = '⏳ Checking…'; btn.disabled = true; }
+
+  let info;
+  try { info = await api.get('/upgrade/check?bust=' + Date.now()); }
+  catch { toast.error('Could not reach GitHub'); if (btn) { btn.textContent = '🔄 Check for updates'; btn.disabled = false; } return; }
+
+  if (btn) { btn.textContent = '🔄 Check for updates'; btn.disabled = false; }
+
+  if (!info.updateAvailable) {
+    toast.success(`Already on the latest version (v${info.current})`);
+    return;
+  }
+
+  // If on the dashboard the upgrade card may already be there — re-render it
+  const wrap = document.getElementById('upgradeCardWrap');
+  if (wrap) {
+    // Re-use the existing render logic
+    await checkAndRenderUpgradeCard();
+  } else {
+    toast.info(`Litehost ${info.latest} is available — go to the dashboard to update`);
+  }
+}
+
 async function checkAndRenderUpgradeCard() {
   const wrap = document.getElementById('upgradeCardWrap');
   if (!wrap) return;
