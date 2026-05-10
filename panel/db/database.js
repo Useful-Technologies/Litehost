@@ -65,6 +65,16 @@ db.exec(`
     detail TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- Keep only the 1000 most recent log entries.  Without this the table grows
+  -- forever — every git deploy and site creation appends a row indefinitely.
+  CREATE TRIGGER IF NOT EXISTS trim_activity_log
+  AFTER INSERT ON activity_log
+  BEGIN
+    DELETE FROM activity_log WHERE id NOT IN (
+      SELECT id FROM activity_log ORDER BY id DESC LIMIT 1000
+    );
+  END;
 `);
 
 // Migrate existing databases — columns
