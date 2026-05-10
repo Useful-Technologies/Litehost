@@ -7,8 +7,9 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcrypt');
 const db = require('./db/database');
-const pm    = require('./services/process-manager');
-const nginx = require('./services/nginx');
+const pm     = require('./services/process-manager');
+const nginx  = require('./services/nginx');
+const cgroup = require('./services/cgroup');
 
 const app = express();
 const PORT = process.env.PANEL_PORT || 3000;
@@ -64,7 +65,8 @@ app.use('/api/sites/:siteId/files', require('./routes/files'));
 app.use('/api/users',  require('./routes/users'));
 app.use('/api/certs',  require('./routes/certs'));
 app.use('/api/deploy', require('./routes/deploy'));
-app.use('/api/system', require('./routes/system'));
+app.use('/api/system',  require('./routes/system'));
+app.use('/api/upgrade', require('./routes/upgrade'));
 
 app.get('/api/health', (req, res) => res.json({ status: 'ok', version: '1.0.0' }));
 
@@ -104,8 +106,65 @@ function generatePassword() {
   return Array.from({ length: 16 }, () => chars[Math.floor(Math.random() * chars.length)]).join('');
 }
 
+// ─── Automatic isolation migration ───────────────────────────────────────────
+// Runs once on the first boot after the isolation update.  For each existing
+// site that has no sys_user yet, create a dedicated Linux user, chown the
+// site directory, and set up a cgroup.  Idempotent — safe to run on every
+// boot (the WHERE clause filters out already-migrated sites instantly).
+const { execSync: _execSync } = require('child_process');
+
+async function migrateIsolation() {
+  const sites = db.prepare('SELECT * FROM sites WHERE sys_user IS NULL').all();
+  if (!sites.length) return;
+
+  console.log(`[migrate] Upgrading ${sites.length} site(s) to per-user isolation…`);
+  let phpReload = false;
+
+  for (const site of sites) {
+    const sysUser = `lh-${site.name}`.slice(0, 31);
+    const siteDir = `/opt/hosted-sites/${site.name}`;
+
+    try {
+      _execSync(
+        `sudo useradd -r -M -s /usr/sbin/nologin -d ${siteDir} ${sysUser}`,
+        { stdio: 'pipe' }
+      );
+    } catch (e) {
+      if (!e.stderr?.toString().includes('already exists')) {
+        console.warn(`[migrate] useradd ${sysUser}: ${e.message}`);
+      }
+    }
+
+    try {
+      _execSync(`sudo chown -R ${sysUser}:${sysUser} ${siteDir}`, { stdio: 'pipe' });
+    } catch (e) {
+      console.warn(`[migrate] chown ${siteDir}: ${e.message}`);
+    }
+
+    db.prepare('UPDATE sites SET sys_user = ? WHERE id = ?').run(sysUser, site.id);
+    cgroup.createCgroup(site.name, site.mem_limit_mb || null, null);
+
+    if (site.runtime === 'php') {
+      const updated = db.prepare('SELECT * FROM sites WHERE id = ?').get(site.id);
+      try { nginx.writePHPPool(updated); phpReload = true; } catch (e) {
+        console.warn(`[migrate] writePHPPool ${site.name}: ${e.message}`);
+      }
+    }
+
+    console.log(`[migrate] ✓ ${site.name} → ${sysUser}`);
+  }
+
+  if (phpReload) {
+    try { _execSync('sudo systemctl reload php8.1-fpm', { stdio: 'pipe' }); } catch {}
+  }
+
+  console.log('[migrate] Isolation migration complete.');
+}
+
 async function boot() {
   await ensureOwner();
+  console.log(`[cgroup] Delegated subtree: ${cgroup.getCgroupBase()}`);
+  await migrateIsolation();
   try {
     nginx.writeDefaultConfig();
     nginx.reloadNginx();

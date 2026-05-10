@@ -65,6 +65,9 @@ server {
 }
 ` : '';
 
+  // Use the per-site socket if the pool config exists, else fall back to shared
+  const socketPath = phpPoolSocket(site);
+
   return `${redirect}server {
     ${listenLine}
     server_name ${serverName};
@@ -78,7 +81,7 @@ ${certId ? sslBlock(certId) : ''}
 
     location ~ \\.php$ {
         include snippets/fastcgi-php.conf;
-        fastcgi_pass unix:/run/php/php${phpVer}-fpm.sock;
+        fastcgi_pass unix:${socketPath};
         fastcgi_param SCRIPT_FILENAME $realpath_root$fastcgi_script_name;
         include fastcgi_params;
     }
@@ -86,6 +89,76 @@ ${certId ? sslBlock(certId) : ''}
     access_log /var/log/hostctl/${site.name}-access.log;
     error_log  /var/log/hostctl/${site.name}-error.log;
 }`.trim();
+}
+
+// ─── Per-site PHP-FPM pool helpers ────────────────────────────────────────────
+
+function phpPoolSocket(site) {
+  const sysUser = site.sys_user || `lh-${site.name}`.slice(0, 31);
+  return `/run/php/${sysUser}.sock`;
+}
+
+function phpPoolConfPath(site) {
+  const phpVer  = site.php_version || '8.1';
+  const sysUser = site.sys_user || `lh-${site.name}`.slice(0, 31);
+  return `/etc/php/${phpVer}/fpm/pool.d/${sysUser}.conf`;
+}
+
+/**
+ * Write a dedicated PHP-FPM pool for the site and reload php-fpm.
+ * The pool runs as the site's Linux user so PHP processes are isolated.
+ * Uses ondemand pm so workers are only alive while handling requests.
+ */
+function writePHPPool(site) {
+  if (site.runtime !== 'php') return;
+  const phpVer  = site.php_version || '8.1';
+  const sysUser = site.sys_user || `lh-${site.name}`.slice(0, 31);
+  const socket  = phpPoolSocket(site);
+  const confPath = phpPoolConfPath(site);
+
+  const conf = `; Managed by Litehost — do not edit manually
+; Site: ${site.name}
+[${sysUser}]
+user  = ${sysUser}
+group = ${sysUser}
+listen = ${socket}
+listen.owner = www-data
+listen.group = www-data
+listen.mode  = 0660
+
+pm                   = ondemand
+pm.max_children      = 5
+pm.process_idle_timeout = 30s
+pm.max_requests      = 500
+
+php_admin_value[open_basedir]   = /opt/hosted-sites/${site.name}:/tmp
+php_admin_value[disable_functions] = exec,passthru,shell_exec,system,proc_open,popen
+`;
+
+  try {
+    // Write via sudo tee (panel runs as litehost, pool.d is root-owned)
+    const { execSync } = require('child_process');
+    execSync(`echo ${JSON.stringify(conf)} | sudo tee ${confPath}`, { stdio: 'pipe' });
+    execSync(`sudo systemctl reload php${phpVer}-fpm`, { stdio: 'pipe' });
+  } catch (e) {
+    console.error(`[nginx] writePHPPool ${site.name}:`, e.message);
+  }
+}
+
+/**
+ * Remove the per-site PHP-FPM pool config and reload php-fpm.
+ */
+function removePHPPool(site) {
+  if (site.runtime !== 'php') return;
+  const phpVer   = site.php_version || '8.1';
+  const confPath = phpPoolConfPath(site);
+  try {
+    const { execSync } = require('child_process');
+    execSync(`sudo rm -f ${confPath}`, { stdio: 'pipe' });
+    execSync(`sudo systemctl reload php${phpVer}-fpm`, { stdio: 'pipe' });
+  } catch (e) {
+    console.error(`[nginx] removePHPPool ${site.name}:`, e.message);
+  }
 }
 
 function proxyConfig(site, certId) {
@@ -240,4 +313,4 @@ server {
   fs.symlinkSync(confPath, enabledPath);
 }
 
-module.exports = { writeSiteConfig, removeSiteConfig, reloadNginx, enableHTTPS, generateConfig, writeDefaultConfig };
+module.exports = { writeSiteConfig, removeSiteConfig, reloadNginx, enableHTTPS, generateConfig, writeDefaultConfig, writePHPPool, removePHPPool };

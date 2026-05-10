@@ -216,9 +216,22 @@ log "Nginx configured and reloaded"
 # ── Step 13: Sudoers for nginx ───────────────────────────────
 hr; echo -e "${BOLD}Step 13: Configuring sudoers${NC}"; hr
 cat > /etc/sudoers.d/litehost <<SUDOEOF
-# Litehost panel: allow nginx config test and reload without password
+# Litehost panel: nginx config test and reload
 ${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/sbin/nginx -t
 ${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reload nginx
+
+# Per-site Linux user management (isolation)
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/sbin/useradd -r -M -s /usr/sbin/nologin -d /opt/hosted-sites/* lh-*
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/sbin/userdel -r lh-*
+${LITEHOST_USER} ALL=(root) NOPASSWD: /bin/chown -R lh-*\:lh-* /opt/hosted-sites/*
+
+# PHP-FPM per-site pool management
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/tee /etc/php/*/fpm/pool.d/lh-*.conf
+${LITEHOST_USER} ALL=(root) NOPASSWD: /bin/rm -f /etc/php/*/fpm/pool.d/lh-*.conf
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reload php*-fpm
+
+# Self-upgrade: restart the panel service
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart litehost
 SUDOEOF
 chmod 440 /etc/sudoers.d/litehost
 # Validate sudoers syntax
@@ -246,6 +259,16 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=litehost
 EnvironmentFile=-${CONF_DIR}/litehost.env
+
+# cgroups v2 isolation: delegate the service's cgroup subtree to the
+# litehost user so it can create per-site cgroups without sudo.
+Delegate=yes
+
+# Allow the panel to spawn child processes as other Linux users
+# (per-site isolation).  CAP_SETUID/SETGID are inherited as ambient
+# capabilities so Node's spawn() uid/gid options work without root.
+AmbientCapabilities=CAP_SETUID CAP_SETGID
+CapabilityBoundingSet=CAP_SETUID CAP_SETGID
 
 [Install]
 WantedBy=multi-user.target

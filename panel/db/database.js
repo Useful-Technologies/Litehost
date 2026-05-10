@@ -86,6 +86,10 @@ try { db.exec(`ALTER TABLE sites ADD COLUMN cert_id INTEGER REFERENCES certifica
 try { db.exec(`ALTER TABLE sites ADD COLUMN git_auto_deploy INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN deploy_token TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN webhook_secret TEXT`); } catch {}
+// Isolation columns — added in the cgroups v2 + per-user isolation update
+try { db.exec(`ALTER TABLE sites ADD COLUMN sys_user TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN mem_limit_mb INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN cpu_quota_pct INTEGER`); } catch {}
 
 // Generate deploy tokens and webhook secrets for any sites that don't have them
 const crypto = require('crypto');

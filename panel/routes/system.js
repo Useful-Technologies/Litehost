@@ -3,6 +3,12 @@ const os = require('os');
 const fs = require('fs');
 const { requireAuth } = require('../middleware/auth');
 const pm = require('../services/process-manager');
+const cgroup = require('../services/cgroup');
+const db = require('../db/database');
+
+// Cached statement for OOM status update and site name lookup
+const stmtSetOOM    = db.prepare("UPDATE sites SET status = 'oom_killed' WHERE id = ? AND status = 'running'");
+const stmtGetSiteId = db.prepare('SELECT id, name, mem_limit_mb FROM sites WHERE id = ?');
 
 const router = express.Router();
 
@@ -218,7 +224,30 @@ function sampleProcs() {
   const pids = pm.getTrackedPids(); // [{siteId, pid}]
   stats.procs.sites.length = 0;
   for (const { siteId, pid } of pids) {
-    stats.procs.sites.push({ siteId, pid, rss: pidRss(pid) });
+    const row = stmtGetSiteId.get(siteId);
+    const siteName = row?.name;
+
+    // Prefer cgroup memory.current (exact total including all workers),
+    // fall back to pidRss for sites not yet in a cgroup
+    const rss = siteName
+      ? (cgroup.readCgroupMemory(siteName) || pidRss(pid))
+      : pidRss(pid);
+
+    stats.procs.sites.push({
+      siteId,
+      pid,
+      rss,
+      memLimit: row?.mem_limit_mb ? row.mem_limit_mb * 1024 * 1024 : null,
+    });
+
+    // OOM detection: if memory.events shows oom_kill > 0, the site was
+    // killed by the kernel for exceeding its memory limit
+    if (siteName) {
+      const events = cgroup.readCgroupEvents(siteName);
+      if (events.oom_kill > 0) {
+        stmtSetOOM.run(siteId);
+      }
+    }
   }
 }
 

@@ -76,9 +76,17 @@ function runtimeBadge(rt) {
   return `<span class="badge ${cls}">${label}</span>`;
 }
 function statusBadge(s) {
-  const map = { running: ['badge-green', '● Running'], stopped: ['badge-muted', '○ Stopped'], error: ['badge-red', '✕ Error'] };
+  const map = {
+    running:    ['badge-green',  '● Running'],
+    stopped:    ['badge-muted',  '○ Stopped'],
+    error:      ['badge-red',    '✕ Error'],
+    oom_killed: ['badge-red',    '⚠ OOM Killed'],
+  };
   const [cls, label] = map[s] || ['badge-muted', s];
-  return `<span class="badge ${cls}">${label}</span>`;
+  const extra = s === 'oom_killed'
+    ? ` title="Site was killed by the OS — it exceeded its memory limit"`
+    : '';
+  return `<span class="badge ${cls}"${extra}>${label}</span>`;
 }
 function dnsBadge(s) {
   const map = { connected: ['badge-green', '✓ Connected'], propagating: ['badge-yellow', '⏳ Propagating'], not_pointing: ['badge-red', '✕ Not Pointing'], none: ['badge-muted', '— No Domain'] };
