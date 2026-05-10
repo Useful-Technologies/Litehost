@@ -1,8 +1,20 @@
 const { execSync } = require('child_process');
 const os = require('os');
 
+// Detect once at startup, then refresh every hour.
+// Without caching, every checkDNS() call (triggered by GET /api/sites/:id)
+// spawned a curl subprocess — one per page load of the site detail view.
+let _cachedIP = null;
+let _ipFetchedAt = 0;
+const IP_TTL_MS = 60 * 60 * 1000; // 1 hour
+
 function getServerIP() {
-  return process.env.SERVER_IP || detectPublicIP();
+  if (process.env.SERVER_IP) return process.env.SERVER_IP;
+  const now = Date.now();
+  if (_cachedIP && now - _ipFetchedAt < IP_TTL_MS) return _cachedIP;
+  _cachedIP = detectPublicIP();
+  _ipFetchedAt = now;
+  return _cachedIP;
 }
 
 function detectPublicIP() {

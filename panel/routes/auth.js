@@ -5,6 +5,11 @@ const db = require('../db/database');
 
 const router = express.Router();
 
+const stmts = {
+  getUserByName: db.prepare('SELECT * FROM users WHERE username = ?'),
+  getUserById:   db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?'),
+};
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -19,7 +24,7 @@ router.post('/login', loginLimiter, async (req, res) => {
     return res.status(400).json({ error: 'Username and password required' });
   }
 
-  const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username.trim());
+  const user = stmts.getUserByName.get(username.trim());
   if (!user) {
     return res.status(401).json({ error: 'Invalid credentials' });
   }
@@ -50,8 +55,7 @@ router.post('/logout', (req, res) => {
 
 router.get('/me', (req, res) => {
   if (!req.session?.userId) return res.status(401).json({ error: 'Not authenticated' });
-  const user = db.prepare('SELECT id, username, role, created_at FROM users WHERE id = ?')
-    .get(req.session.userId);
+  const user = stmts.getUserById.get(req.session.userId);
   if (!user) return res.status(401).json({ error: 'Not authenticated' });
   res.json(user);
 });

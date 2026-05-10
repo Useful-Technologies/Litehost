@@ -134,9 +134,12 @@ async function renderDashboard() {
       </div>
       ${sitesTable(sites)}
     </div>
+
+    ${currentUser.role === 'owner' ? `<div id="upgradeCardWrap"></div>` : ''}
   `);
 
   startSystemPoller();
+  if (currentUser.role === 'owner') checkAndRenderUpgradeCard();
 }
 
 // ─── Sites List ───────────────────────────────────────────────────────────────
@@ -162,7 +165,10 @@ function sitesTable(sites) {
               <td><strong>${s.name}</strong></td>
               <td>${s.domain ? `<a href="http://${s.domain}" target="_blank">${s.domain}</a>` : '<span style="color:var(--muted)">—</span>'}</td>
               <td>${runtimeBadge(s.runtime)}</td>
-              <td>${statusBadge(s.status)}</td>
+              <td>
+                ${statusBadge(s.status)}
+                <div id="site-mem-${s.id}" style="margin-top:4px"></div>
+              </td>
               <td>
                 <button class="btn btn-sm btn-secondary" onclick="navigate('site', ${s.id})">Manage</button>
                 ${currentUser.role === 'owner' ? `<button class="btn btn-sm btn-danger" onclick="deleteSite(${s.id}, '${s.name}')">Delete</button>` : ''}
@@ -394,6 +400,38 @@ function siteSettingsTab(site) {
         ${currentUser.role === 'owner' ? `<button class="btn btn-danger" onclick="deleteSite(${site.id}, '${site.name}')">Delete Site</button>` : ''}
       </div>
     </div>
+
+    ${currentUser.role === 'owner' ? `
+    <div class="card">
+      <div class="card-header"><span class="card-title">⚡ Resource Limits</span></div>
+      <div class="form-row">
+        <div class="form-group">
+          <label>Memory Limit (MB)</label>
+          <input type="number" id="settingMemLimit" value="${site.mem_limit_mb || ''}" placeholder="Unlimited" min="32" />
+          <div class="preset-btns">
+            <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value='128'">128 MB</button>
+            <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value='256'">256 MB</button>
+            <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value='512'">512 MB</button>
+            <button class="preset-btn" onclick="document.getElementById('settingMemLimit').value=''">Unlimited</button>
+          </div>
+          <div class="form-hint">OOM killer activates if the site exceeds this limit. Leave blank for no limit.</div>
+        </div>
+        <div class="form-group">
+          <label>CPU Quota (%)</label>
+          <input type="number" id="settingCpuQuota" value="${site.cpu_quota_pct || ''}" placeholder="Unlimited" min="1" max="100" />
+          <div class="preset-btns">
+            <button class="preset-btn" onclick="document.getElementById('settingCpuQuota').value='25'">25%</button>
+            <button class="preset-btn" onclick="document.getElementById('settingCpuQuota').value='50'">50%</button>
+            <button class="preset-btn" onclick="document.getElementById('settingCpuQuota').value='100'">100%</button>
+            <button class="preset-btn" onclick="document.getElementById('settingCpuQuota').value=''">Unlimited</button>
+          </div>
+          <div class="form-hint">Percentage of one CPU core. Takes effect instantly — no restart needed.</div>
+        </div>
+      </div>
+      <div style="display:flex;gap:10px;margin-top:8px">
+        <button class="btn btn-primary" onclick="saveResourceLimits(${site.id})">Save Limits</button>
+      </div>
+    </div>` : ''}
 
     <div class="card">
       <div class="card-header"><span class="card-title">🔗 Git Repository</span></div>
@@ -937,8 +975,19 @@ function startSystemPoller() {
         </div>`);
       }
 
-      // All top processes (updated every ~30 s) — shows what else is consuming RAM
-      const topRows = (s.top || []).map(proc =>
+      // Grouped-by-name summary (updated every ~30 s) — reveals multi-worker services
+      const grouped = s.top?.grouped || [];
+      const groupedRows = grouped.map(g =>
+        `<div class="proc-mem-row">
+          <span class="proc-mem-name" style="color:var(--muted)">${g.name}${g.count > 1 ? ` <span style="color:var(--muted);font-size:0.8em">(×${g.count})</span>` : ''}</span>
+          <span class="proc-mem-rss">${fmtBytes(g.totalRss)} RSS</span>
+          <span class="proc-mem-heap">${g.count > 1 ? `${fmtBytes(Math.round(g.totalRss / g.count))} avg` : '1 process'}</span>
+        </div>`
+      ).join('');
+
+      // Individual top-N processes
+      const topList = s.top?.top || [];
+      const topRows = topList.map(proc =>
         `<div class="proc-mem-row">
           <span class="proc-mem-name" style="color:var(--muted)">${proc.name}</span>
           <span class="proc-mem-rss">${fmtBytes(proc.rss)} RSS</span>
@@ -946,14 +995,138 @@ function startSystemPoller() {
         </div>`
       ).join('');
 
-      procEl.innerHTML = managed.join('') + (s.top?.length
-        ? `<div style="margin:10px 0 6px;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">All processes (top by RSS)</div>${topRows}`
-        : '');
+      const sectionHdr = (label) =>
+        `<div style="margin:10px 0 6px;font-size:0.72rem;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;color:var(--muted)">${label}</div>`;
+
+      procEl.innerHTML = managed.join('')
+        + (grouped.length ? sectionHdr('By process type') + groupedRows : '')
+        + (topList.length  ? sectionHdr('Top processes (individual)')  + topRows  : '');
+    }
+
+    // Per-site memory bars in the sites table
+    if (s.procs) {
+      for (const site of s.procs.sites || []) {
+        const el = document.getElementById(`site-mem-${site.siteId}`);
+        if (!el) continue;
+        const rss   = site.rss;
+        const limit = site.memLimit; // bytes or null
+        if (!rss) { el.innerHTML = ''; continue; }
+        const pct   = limit ? Math.min(Math.round(rss / limit * 100), 100) : 0;
+        const cls   = limit ? (pct >= 90 ? 'danger' : pct >= 70 ? 'warn' : '') : '';
+        const label = limit ? `${fmtBytes(rss)} / ${fmtBytes(limit)}` : fmtBytes(rss);
+        el.innerHTML = `<div class="site-mem-bar-wrap">
+          ${limit ? `<div class="site-mem-bar"><div class="site-mem-bar-fill ${cls}" style="width:${pct}%"></div></div>` : ''}
+          <span style="font-size:0.75rem;color:var(--muted)">${label} RSS</span>
+        </div>`;
+      }
     }
   }
 
   tick();
   _systemPoller = setInterval(tick, 5000);
+}
+
+// ─── Resource limits ─────────────────────────────────────────────────────────
+async function saveResourceLimits(siteId) {
+  const memVal = document.getElementById('settingMemLimit')?.value.trim();
+  const cpuVal = document.getElementById('settingCpuQuota')?.value.trim();
+  const mem_limit_mb  = memVal  ? parseInt(memVal,  10) : null;
+  const cpu_quota_pct = cpuVal  ? parseInt(cpuVal,  10) : null;
+  if (mem_limit_mb !== null  && (isNaN(mem_limit_mb)  || mem_limit_mb  < 32)) return toast.error('Memory limit must be ≥ 32 MB');
+  if (cpu_quota_pct !== null && (isNaN(cpu_quota_pct) || cpu_quota_pct < 1 || cpu_quota_pct > 100)) return toast.error('CPU quota must be 1–100%');
+  try {
+    const updated = await api.patch(`/sites/${siteId}`, { mem_limit_mb, cpu_quota_pct });
+    currentSite = { ...currentSite, ...updated };
+    toast.success('Resource limits updated — takes effect immediately');
+  } catch (e) { toast.error(e.message); }
+}
+
+// ─── Upgrade card ────────────────────────────────────────────────────────────
+async function checkAndRenderUpgradeCard() {
+  const wrap = document.getElementById('upgradeCardWrap');
+  if (!wrap) return;
+
+  let info;
+  try { info = await api.get('/upgrade/check'); }
+  catch { return; } // silently ignore if GitHub unreachable
+
+  if (!info.updateAvailable) return; // nothing to show
+
+  wrap.innerHTML = `
+    <div class="upgrade-card">
+      <div class="upgrade-card-icon">🚀</div>
+      <div class="upgrade-card-text">
+        <div class="upgrade-card-title">Litehost ${info.latest} is available</div>
+        <div class="upgrade-card-sub">You're running v${info.current}${info.releaseUrl ? ` — <a href="${info.releaseUrl}" target="_blank" style="color:var(--green)">view release notes</a>` : ''}</div>
+      </div>
+      <button class="btn btn-primary" onclick="runUpgrade(this)">Update Now</button>
+    </div>
+  `;
+}
+
+async function runUpgrade(btn) {
+  const wrap = document.getElementById('upgradeCardWrap');
+  if (!wrap) return;
+
+  // Replace upgrade card with log overlay
+  wrap.innerHTML = `
+    <div class="upgrade-log-overlay">
+      <div class="upgrade-log-box">
+        <div class="upgrade-log-header">
+          <span>🚀 Updating Litehost…</span>
+        </div>
+        <div class="upgrade-log-body" id="upgradeLogBody">Starting…</div>
+      </div>
+    </div>
+  `;
+
+  const logEl = document.getElementById('upgradeLogBody');
+  function appendLog(msg) {
+    logEl.textContent += '\n' + msg;
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  try {
+    const res = await fetch('/api/upgrade/run', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!res.ok || !res.body) {
+      appendLog('Error: unexpected response from server');
+      return;
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const lines = buf.split('\n');
+      buf = lines.pop(); // keep incomplete line
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        let payload;
+        try { payload = JSON.parse(line.slice(5).trim()); } catch { continue; }
+        if (payload.msg) appendLog(payload.msg);
+        if (payload.done) {
+          if (payload.success) {
+            appendLog('\n✅ Update complete — reloading in 3 s…');
+            setTimeout(() => window.location.reload(), 3000);
+          } else {
+            appendLog(`\n❌ Update failed: ${payload.msg}`);
+          }
+          return;
+        }
+      }
+    }
+  } catch (e) {
+    appendLog(`\n❌ Error: ${e.message}`);
+  }
 }
 
 function fillClass(pct) {

@@ -65,6 +65,16 @@ db.exec(`
     detail TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
+
+  -- Keep only the 1000 most recent log entries.  Without this the table grows
+  -- forever — every git deploy and site creation appends a row indefinitely.
+  CREATE TRIGGER IF NOT EXISTS trim_activity_log
+  AFTER INSERT ON activity_log
+  BEGIN
+    DELETE FROM activity_log WHERE id NOT IN (
+      SELECT id FROM activity_log ORDER BY id DESC LIMIT 1000
+    );
+  END;
 `);
 
 // Migrate existing databases — columns
@@ -76,6 +86,10 @@ try { db.exec(`ALTER TABLE sites ADD COLUMN cert_id INTEGER REFERENCES certifica
 try { db.exec(`ALTER TABLE sites ADD COLUMN git_auto_deploy INTEGER NOT NULL DEFAULT 0`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN deploy_token TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN webhook_secret TEXT`); } catch {}
+// Isolation columns — added in the cgroups v2 + per-user isolation update
+try { db.exec(`ALTER TABLE sites ADD COLUMN sys_user TEXT`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN mem_limit_mb INTEGER`); } catch {}
+try { db.exec(`ALTER TABLE sites ADD COLUMN cpu_quota_pct INTEGER`); } catch {}
 
 // Generate deploy tokens and webhook secrets for any sites that don't have them
 const crypto = require('crypto');

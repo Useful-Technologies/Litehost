@@ -9,6 +9,7 @@ const nginx = require('../services/nginx');
 const ssl   = require('../services/ssl');
 const dns   = require('../services/dns');
 const pm = require('../services/process-manager');
+const cgroup = require('../services/cgroup');
 
 const router = express.Router();
 
@@ -18,6 +19,45 @@ const LOG_DIR = '/var/log/hostctl';
 
 function slugify(str) {
   return str.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+}
+
+// ─── Per-site Linux user helpers ──────────────────────────────────────────────
+// Linux usernames are capped at 32 chars.  "lh-" + up to 28 site-name chars.
+function siteUser(name) {
+  return `lh-${name}`.slice(0, 31);
+}
+
+function createSiteUser(name, siteDir) {
+  const user = siteUser(name);
+  try {
+    execSync(
+      `sudo useradd -r -M -s /usr/sbin/nologin -d ${siteDir} ${user}`,
+      { stdio: 'pipe' }
+    );
+  } catch (e) {
+    // Ignore "already exists" — can happen if site is being recreated
+    if (!e.stderr?.toString().includes('already exists')) {
+      console.warn(`[sites] useradd ${user}:`, e.message);
+    }
+  }
+  try {
+    execSync(`sudo chown -R ${user}:${user} ${siteDir}`, { stdio: 'pipe' });
+  } catch (e) {
+    console.warn(`[sites] chown ${siteDir}:`, e.message);
+  }
+  return user;
+}
+
+function removeSiteUser(name) {
+  const user = siteUser(name);
+  try {
+    execSync(`sudo userdel -r ${user}`, { stdio: 'pipe' });
+  } catch (e) {
+    // Ignore "does not exist" — might have been cleaned up already
+    if (!e.stderr?.toString().includes('does not exist')) {
+      console.warn(`[sites] userdel ${user}:`, e.message);
+    }
+  }
 }
 
 function getSiteForUser(user, siteId) {
@@ -48,7 +88,7 @@ router.get('/', requireAuth, (req, res) => {
 
 // Create site (owner only)
 router.post('/', requireAuth, requireOwner, (req, res) => {
-  const { name, domain, runtime, start_command, php_version } = req.body;
+  const { name, domain, runtime, start_command, php_version, mem_limit_mb, cpu_quota_pct } = req.body;
   if (!name) return res.status(400).json({ error: 'Site name required' });
 
   const slug = slugify(name);
@@ -76,25 +116,36 @@ router.post('/', requireAuth, requireOwner, (req, res) => {
   }
 
   const deploy_token = crypto.randomBytes(32).toString('hex');
+  const memLimit  = mem_limit_mb  ? parseInt(mem_limit_mb)  : null;
+  const cpuQuota  = cpu_quota_pct ? parseInt(cpu_quota_pct) : null;
 
   const result = db.prepare(`
-    INSERT INTO sites (name, domain, runtime, port, start_command, php_version, deploy_token)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(slug, domain || null, runtime || 'static', port, start_command || null, php_version || '8.1', deploy_token);
-
-  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(result.lastInsertRowid);
+    INSERT INTO sites (name, domain, runtime, port, start_command, php_version, deploy_token, mem_limit_mb, cpu_quota_pct)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(slug, domain || null, runtime || 'static', port, start_command || null, php_version || '8.1', deploy_token, memLimit, cpuQuota);
 
   // Create directories
-  fs.mkdirSync(`${SITES_DIR}/${slug}`, { recursive: true });
+  const siteDir = `${SITES_DIR}/${slug}`;
+  fs.mkdirSync(siteDir, { recursive: true });
   fs.mkdirSync(CONF_DIR, { recursive: true });
   fs.mkdirSync(LOG_DIR, { recursive: true });
+
+  // Create per-site Linux user and chown the site directory
+  const sys_user = createSiteUser(slug, siteDir);
+  db.prepare('UPDATE sites SET sys_user = ? WHERE id = ?').run(sys_user, result.lastInsertRowid);
+
+  // Create cgroup for resource isolation
+  cgroup.createCgroup(slug, memLimit, cpuQuota);
+
+  const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(result.lastInsertRowid);
 
   // Write site config JSON
   fs.writeFileSync(`${CONF_DIR}/${slug}.json`, JSON.stringify(site, null, 2));
 
-  // Write nginx config and reload
+  // Write nginx config (+ PHP-FPM pool for php sites) and reload
   try {
     nginx.writeSiteConfig(site);
+    if (site.runtime === 'php') nginx.writePHPPool(site);
     nginx.reloadNginx();
   } catch (e) {
     console.error('Nginx config error:', e.message);
@@ -128,7 +179,7 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id, git_auto_deploy } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id, git_auto_deploy, mem_limit_mb, cpu_quota_pct } = req.body;
 
   if (start_command && !start_command.includes('{PORT}') &&
       (site.runtime === 'custom' || site.runtime === 'node')) {
@@ -141,6 +192,9 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
     if (!certRow) return res.status(400).json({ error: 'Certificate not found' });
   }
 
+  const newMemLimit  = mem_limit_mb  !== undefined ? (mem_limit_mb  ? parseInt(mem_limit_mb)  : null) : undefined;
+  const newCpuQuota  = cpu_quota_pct !== undefined ? (cpu_quota_pct ? parseInt(cpu_quota_pct) : null) : undefined;
+
   db.prepare(`
     UPDATE sites SET
       domain = COALESCE(?, domain),
@@ -150,7 +204,9 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       git_repo = ?,
       git_branch = COALESCE(?, git_branch),
       cert_id = ?,
-      git_auto_deploy = COALESCE(?, git_auto_deploy)
+      git_auto_deploy = COALESCE(?, git_auto_deploy),
+      mem_limit_mb = CASE WHEN ? IS NOT NULL THEN ? ELSE mem_limit_mb END,
+      cpu_quota_pct = CASE WHEN ? IS NOT NULL THEN ? ELSE cpu_quota_pct END
     WHERE id = ?
   `).run(
     domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
@@ -158,14 +214,26 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
     git_branch || null,
     cert_id !== undefined ? (cert_id || null) : site.cert_id,
     git_auto_deploy !== undefined ? (git_auto_deploy ? 1 : 0) : null,
+    newMemLimit  !== undefined ? 1 : null, newMemLimit  !== undefined ? newMemLimit  : null,
+    newCpuQuota  !== undefined ? 1 : null, newCpuQuota  !== undefined ? newCpuQuota  : null,
     site.id
   );
 
   const updated = db.prepare('SELECT * FROM sites WHERE id = ?').get(site.id);
   fs.writeFileSync(`${CONF_DIR}/${site.name}.json`, JSON.stringify(updated, null, 2));
 
+  // Apply new resource limits to the cgroup immediately (no restart needed)
+  if (newMemLimit !== undefined || newCpuQuota !== undefined) {
+    cgroup.updateLimits(
+      site.name,
+      updated.mem_limit_mb || null,
+      updated.cpu_quota_pct || null
+    );
+  }
+
   try {
     nginx.writeSiteConfig(updated);
+    if (updated.runtime === 'php') nginx.writePHPPool(updated);
     nginx.reloadNginx();
   } catch (e) { console.error('Nginx error:', e.message); }
 
@@ -177,12 +245,25 @@ router.delete('/:id', requireAuth, requireOwner, (req, res) => {
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
+  // Stop processes (uses cgroup.kill internally)
   pm.stopSite(site.id);
+
+  // Belt-and-suspenders: nuke cgroup and remove it
+  cgroup.killCgroup(site.name);
+  cgroup.removeCgroup(site.name);
+
+  // Remove PHP-FPM pool if applicable
+  try { nginx.removePHPPool(site); } catch {}
+
   nginx.removeSiteConfig(site.name);
   nginx.reloadNginx();
 
+  // Remove site files and config
   try { fs.rmSync(`${SITES_DIR}/${site.name}`, { recursive: true, force: true }); } catch {}
   try { fs.unlinkSync(`${CONF_DIR}/${site.name}.json`); } catch {}
+
+  // Delete the per-site Linux user
+  removeSiteUser(site.name);
 
   db.prepare('DELETE FROM sites WHERE id = ?').run(site.id);
 

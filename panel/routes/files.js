@@ -19,8 +19,9 @@ function safePath(siteDir, relPath) {
   return resolved;
 }
 
+const stmtGetSite = db.prepare('SELECT * FROM sites WHERE id = ?');
 function getSite(id) {
-  return db.prepare('SELECT * FROM sites WHERE id = ?').get(id);
+  return stmtGetSite.get(id);
 }
 
 // Multer setup — store to disk in temp, then move

@@ -2,14 +2,25 @@ const { spawn, execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const db = require('../db/database');
+const cgroup = require('./cgroup');
 
 const processes = new Map();
 const PORT_START = 4000;
 const PORT_END = 5000;
 
+// ─── Cached prepared statements ──────────────────────────────────────────────
+const stmts = {
+  getUsedPorts: db.prepare('SELECT port FROM sites WHERE port IS NOT NULL'),
+  getSitePort:  db.prepare('SELECT port FROM sites WHERE id = ?'),
+  getSiteName:  db.prepare('SELECT name FROM sites WHERE id = ?'),
+  setRunning:   db.prepare("UPDATE sites SET status = 'running' WHERE id = ?"),
+  setStopped:   db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?"),
+  setError:     db.prepare("UPDATE sites SET status = 'error' WHERE id = ?"),
+  getRunning:   db.prepare("SELECT * FROM sites WHERE runtime IN ('node', 'custom') AND status = 'running'"),
+};
+
 function getUsedPorts() {
-  const sites = db.prepare('SELECT port FROM sites WHERE port IS NOT NULL').all();
-  return new Set(sites.map(s => s.port));
+  return new Set(stmts.getUsedPorts.all().map(s => s.port));
 }
 
 function isPortListening(port) {
@@ -46,6 +57,22 @@ function logLine(fd, msg) {
   fs.writeSync(fd, `[${ts}] ${msg}\n`);
 }
 
+// ─── Resolve uid/gid from a Linux username ────────────────────────────────────
+// Uses the `id` command — fast, always accurate, no native addon needed.
+// Returns { uid: number, gid: number } or null if the user doesn't exist.
+function resolveUser(username) {
+  if (!username) return null;
+  try {
+    const uid = parseInt(execSync(`id -u ${username}`, { stdio: 'pipe' }).toString().trim());
+    const gid = parseInt(execSync(`id -g ${username}`, { stdio: 'pipe' }).toString().trim());
+    if (isNaN(uid) || isNaN(gid)) return null;
+    return { uid, gid };
+  } catch {
+    return null;
+  }
+}
+
+// ─── startSite ────────────────────────────────────────────────────────────────
 function startSite(site) {
   const siteDir = `/opt/hosted-sites/${site.name}`;
   const logFile = `/var/log/hostctl/${site.name}.log`;
@@ -55,38 +82,57 @@ function startSite(site) {
 
   const cmd = buildCommand(site);
 
-  // Use a synchronous fd so it's ready before spawn — prevents early stderr being lost
   const fd = fs.openSync(logFile, 'a');
   logLine(fd, `[START] ${cmd}`);
+
+  // Resolve per-site user if isolation is set up; fall back to litehost
+  const userInfo = site.sys_user ? resolveUser(site.sys_user) : null;
 
   const siteEnv = {
     PATH: '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin',
     HOME: siteDir,
-    USER: 'litehost',
+    USER: site.sys_user || 'litehost',
     ...parseEnv(site.env_vars),
     PORT: String(site.port),
   };
 
+  // Ensure cgroup exists for this site (idempotent)
+  cgroup.createCgroup(site.name, site.mem_limit_mb || null, site.cpu_quota_pct || null);
+
+  const spawnOpts = {
+    cwd: siteDir,
+    env: siteEnv,
+    detached: true,
+    stdio: ['ignore', fd, fd],
+  };
+
+  // Spawn as the site-specific user when available (requires CAP_SETUID/SETGID
+  // granted via AmbientCapabilities in litehost.service)
+  if (userInfo) {
+    spawnOpts.uid = userInfo.uid;
+    spawnOpts.gid = userInfo.gid;
+  }
+
   let proc;
   try {
-    proc = spawn('/bin/sh', ['-c', cmd], {
-      cwd: siteDir,
-      env: siteEnv,
-      detached: false,
-      stdio: ['ignore', fd, fd],
-    });
+    proc = spawn('/bin/sh', ['-c', cmd], spawnOpts);
   } catch (err) {
-    // spawn() threw synchronously — close fd now, it will never be closed by an event
     logLine(fd, `[ERROR] spawn failed: ${err.message}`);
     try { fs.closeSync(fd); } catch {}
-    db.prepare("UPDATE sites SET status = 'error' WHERE id = ?").run(site.id);
+    stmts.setError.run(site.id);
     throw err;
   }
+
+  // Place the process (and all its future children) into the site's cgroup
+  // immediately after spawn.  The tiny race window is covered by the
+  // cgroup.kill fallback in stopSite().
+  cgroup.addToCgroup(site.name, proc.pid);
+  logLine(fd, `[CGROUP] pid ${proc.pid} → site-${site.name}`);
 
   proc.on('error', (err) => {
     logLine(fd, `[ERROR] ${err.message}`);
     try { fs.closeSync(fd); } catch {}
-    db.prepare("UPDATE sites SET status = 'error' WHERE id = ?").run(site.id);
+    stmts.setError.run(site.id);
     processes.delete(site.id);
   });
 
@@ -94,31 +140,39 @@ function startSite(site) {
     const reason = signal ? `signal ${signal}` : `code ${code}`;
     logLine(fd, `[EXIT] Process exited with ${reason}`);
     try { fs.closeSync(fd); } catch {}
-    db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
+    stmts.setStopped.run(site.id);
     processes.delete(site.id);
   });
 
   processes.set(site.id, proc);
-  db.prepare("UPDATE sites SET status = 'running' WHERE id = ?").run(site.id);
+  stmts.setRunning.run(site.id);
   return proc.pid;
 }
 
+// ─── stopSite ─────────────────────────────────────────────────────────────────
 function stopSite(siteId) {
-  // Kill tracked child process
-  const proc = processes.get(siteId);
-  if (proc) {
-    try { proc.kill('SIGTERM'); } catch {}
-    processes.delete(siteId);
+  // Primary: cgroup.kill sends SIGKILL to every process in the hierarchy
+  // simultaneously — no worker can fork-and-escape before the signal lands,
+  // regardless of what setpgrp() / setpgid() tricks it uses.
+  const row = stmts.getSiteName.get(siteId);
+  if (row?.name) {
+    cgroup.killCgroup(row.name);
+    cgroup.removeCgroup(row.name);
+  } else if (processes.has(siteId)) {
+    // Name not found — fall back to direct kill of tracked proc
+    try { processes.get(siteId).kill('SIGTERM'); } catch {}
   }
 
-  // Also kill by port — catches processes that outlived a panel restart
-  // (recoverProcesses marks them running but can't track their PID)
-  const site = db.prepare('SELECT port FROM sites WHERE id = ?').get(siteId);
+  processes.delete(siteId);
+
+  // Belt-and-suspenders: kill whatever is still listening on the port.
+  // This covers sites that outlived a panel restart (no cgroup state in memory).
+  const site = stmts.getSitePort.get(siteId);
   if (site?.port) {
     try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
   }
 
-  db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(siteId);
+  stmts.setStopped.run(siteId);
 }
 
 function isRunning(siteId) {
@@ -126,37 +180,36 @@ function isRunning(siteId) {
   return !!(proc && proc.exitCode === null && proc.signalCode === null);
 }
 
-// On panel restart: reconcile DB status with reality, restarting any
-// sites that were running but whose process didn't survive the restart.
+// ─── recoverProcesses ─────────────────────────────────────────────────────────
+// On panel restart: reconcile DB status with reality, restarting any sites
+// that were running but whose process didn't survive the restart.
 function recoverProcesses() {
-  const sites = db.prepare(
-    "SELECT * FROM sites WHERE runtime IN ('node', 'custom') AND status = 'running'"
-  ).all();
+  const sites = stmts.getRunning.all();
 
   for (const site of sites) {
     if (!site.port || !site.start_command) {
-      db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
+      stmts.setStopped.run(site.id);
       continue;
     }
 
     if (isPortListening(site.port)) {
-      // Process survived the panel restart (orphaned child, still running).
-      // Keep it as-is — nothing to do.
+      // Process survived — keep as-is but recreate cgroup so monitoring works
+      cgroup.createCgroup(site.name, site.mem_limit_mb || null, site.cpu_quota_pct || null);
       console.log(`[pm] Site "${site.name}" still running on port ${site.port}`);
     } else {
-      // Process is gone — restart it automatically
       console.log(`[pm] Site "${site.name}" was running but process is gone — restarting…`);
       try {
         startSite(site);
         console.log(`[pm] Site "${site.name}" restarted successfully`);
       } catch (e) {
         console.error(`[pm] Failed to restart site "${site.name}": ${e.message}`);
-        db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?").run(site.id);
+        stmts.setStopped.run(site.id);
       }
     }
   }
 }
 
+// ─── getTrackedPids ───────────────────────────────────────────────────────────
 // Return [{siteId, pid}] for every process currently tracked in the Map.
 function getTrackedPids() {
   const out = [];
@@ -168,4 +221,12 @@ function getTrackedPids() {
   return out;
 }
 
-module.exports = { startSite, stopSite, isRunning, findFreePort, buildCommand, recoverProcesses, getTrackedPids };
+module.exports = {
+  startSite,
+  stopSite,
+  isRunning,
+  findFreePort,
+  buildCommand,
+  recoverProcesses,
+  getTrackedPids,
+};
