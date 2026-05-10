@@ -1042,6 +1042,10 @@ async function saveResourceLimits(siteId) {
 }
 
 // ─── Upgrade card ────────────────────────────────────────────────────────────
+// Stores the result of the last manual check so checkAndRenderUpgradeCard()
+// can use it instead of making a potentially stale-cached second request.
+let _upgradeInfo = null;
+
 async function manualCheckUpgrade() {
   const btn = document.getElementById('checkUpdateBtn');
   if (btn) { btn.textContent = '⏳ Checking…'; btn.disabled = true; }
@@ -1053,22 +1057,34 @@ async function manualCheckUpgrade() {
   if (btn) { btn.textContent = '🔄 Check for updates'; btn.disabled = false; }
 
   if (!info.updateAvailable) {
-    toast.success(`Already on the latest version (v${info.current})`);
+    toast.success(`✅ Already on the latest version (v${info.current})`);
     return;
   }
 
-  // Pass the already-fetched info directly — no second API call that could hit stale cache
+  // Stash the fresh result so checkAndRenderUpgradeCard() picks it up
+  _upgradeInfo = info;
+
   const wrap = document.getElementById('upgradeCardWrap');
   if (wrap) {
+    // Already on dashboard — render immediately
     renderUpgradeCard(wrap, info);
   } else {
-    toast.info(`Litehost ${info.latest} is available — go to the dashboard to update`);
+    // Navigate to dashboard; checkAndRenderUpgradeCard() will consume _upgradeInfo
+    await renderDashboard();
   }
 }
 
 async function checkAndRenderUpgradeCard() {
   const wrap = document.getElementById('upgradeCardWrap');
   if (!wrap) return;
+
+  // If a manual check already fetched fresh data, use it (avoids stale-cache re-fetch)
+  if (_upgradeInfo) {
+    const info = _upgradeInfo;
+    _upgradeInfo = null;
+    renderUpgradeCard(wrap, info);
+    return;
+  }
 
   let info;
   try { info = await api.get('/upgrade/check'); }
