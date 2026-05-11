@@ -154,26 +154,43 @@ function stopSite(siteId) {
   const row = stmts.getSiteName.get(siteId);
   const siteName = row?.name;
 
-  // Primary: kill every process owned by the site's Linux user.
-  // pkill -KILL -u lh-<name> is immune to setpgrp/setpgid tricks and catches
-  // all workers regardless of how they forked.  Exit code 1 just means no
-  // processes were found — not an error.
+  // 1. Kill the directly tracked process — most reliable, works even if
+  //    sys_user / cgroup is not configured.
+  const proc = processes.get(siteId);
+  if (proc) {
+    try { proc.kill('SIGKILL'); } catch {}
+  }
+
+  // 2. pkill by Linux user — catches any workers that forked off the main
+  //    process.  Only effective when sys_user is set; exit code 1 (no match)
+  //    is silently ignored.
   if (siteName) {
     const sysUser = `lh-${siteName}`.slice(0, 31);
     try { execSync(`pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
   }
 
-  // Secondary: nuke the cgroup too (catches anything that somehow isn't
-  // owned by the site user), then remove it so startSite gets a clean slate.
+  // 3. cgroup.kill — atomically kills everything still in the cgroup.
+  //    Also removes the cgroup so startSite gets a clean slate.
   if (siteName) {
     cgroup.killCgroup(siteName);
     cgroup.removeCgroup(siteName);
   }
 
-  // Belt-and-suspenders: free the port in case anything is still bound.
+  // 4. Port-based kill — last resort, works regardless of user/cgroup state.
+  //    Try fuser first; fall back to ss + kill if fuser isn't installed.
   const site = stmts.getSitePort.get(siteId);
   if (site?.port) {
-    try { execSync(`fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
+    const port = site.port;
+    try {
+      execSync(`fuser -k ${port}/tcp`, { stdio: 'pipe' });
+    } catch {
+      // fuser not installed — use ss to find and kill the PID directly
+      try {
+        const out = execSync(`ss -tlnp 'sport = :${port}'`, { stdio: 'pipe' }).toString();
+        const match = out.match(/pid=(\d+)/);
+        if (match) execSync(`kill -9 ${match[1]}`, { stdio: 'pipe' });
+      } catch {}
+    }
   }
 
   processes.delete(siteId);
