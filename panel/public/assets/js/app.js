@@ -398,27 +398,38 @@ function siteSettingsTab(site) {
   return `
     <div class="card">
       <div class="card-header"><span class="card-title">Site Settings</span></div>
-      <div class="form-row">
-        ${!isWorker ? `<div class="form-group">
+      <div class="form-row single">
+        <div class="form-group">
+          <label>Runtime</label>
+          <select id="settingRuntime" onchange="onSettingRuntimeChange()">
+            <option value="static"  ${site.runtime==='static'  ?'selected':''}>🌐 Static</option>
+            <option value="php"     ${site.runtime==='php'     ?'selected':''}>🐘 PHP</option>
+            <option value="node"    ${site.runtime==='node'    ?'selected':''}>⬡ Node.js</option>
+            <option value="custom"  ${site.runtime==='custom'  ?'selected':''}>⚙ Custom</option>
+            <option value="worker"  ${site.runtime==='worker'  ?'selected':''}>🤖 Worker / Background Service</option>
+          </select>
+          <div class="form-hint">⚠ Changing runtime stops nginx for this site and may require a manual restart.</div>
+        </div>
+      </div>
+      <div class="form-row" id="settingDomainRow" ${isWorker ? 'style="display:none"' : ''}>
+        <div class="form-group">
           <label>Domain</label>
           <input type="text" id="settingDomain" value="${site.domain || ''}" placeholder="example.com" />
-        </div>` : '<div></div>'}
-        ${site.runtime === 'php' ? `
-        <div class="form-group">
+        </div>
+        <div class="form-group" id="settingPhpRow" ${site.runtime !== 'php' ? 'style="display:none"' : ''}>
           <label>PHP Version</label>
           <select id="settingPhpVersion">
             <option value="8.1">PHP 8.1</option>
           </select>
-        </div>` : '<div></div>'}
+        </div>
       </div>
-      ${isProcess ? `
-      <div class="form-row single">
+      <div class="form-row single" id="settingCmdRow" ${!isProcess ? 'style="display:none"' : ''}>
         <div class="form-group">
           <label>Start Command</label>
           <input type="text" id="settingStartCmd" value="${site.start_command || ''}" placeholder="${isWorker ? 'python bot.py' : 'node app.js --port={PORT}'}" />
-          <div class="form-hint">${isWorker ? 'Use <code>{PORT}</code> only if your worker needs a port (e.g. webhook receiver).' : 'Must include <code>{PORT}</code>'}</div>
+          <div class="form-hint" id="settingCmdHint">${isWorker ? 'Use <code>{PORT}</code> only if your worker needs a port (e.g. webhook receiver).' : 'Must include <code>{PORT}</code>'}</div>
         </div>
-      </div>` : ''}
+      </div>
       <div style="display:flex;gap:10px;margin-top:8px">
         <button class="btn btn-primary" onclick="saveSiteSettings(${site.id})">Save Settings</button>
         ${currentUser.role === 'owner' ? `<button class="btn btn-danger" onclick="deleteSite(${site.id}, '${site.name}')">Delete Site</button>` : ''}
@@ -623,14 +634,39 @@ async function processAction(siteId, action) {
   } catch (e) { toast.error(e.message); }
 }
 
+function onSettingRuntimeChange() {
+  const rt = document.getElementById('settingRuntime')?.value;
+  if (!rt) return;
+  const isWorker  = rt === 'worker';
+  const isProcess = ['node', 'custom', 'worker'].includes(rt);
+  const isPhp     = rt === 'php';
+
+  document.getElementById('settingDomainRow').style.display = isWorker ? 'none' : '';
+  document.getElementById('settingPhpRow').style.display    = isPhp    ? ''     : 'none';
+  document.getElementById('settingCmdRow').style.display    = isProcess ? ''    : 'none';
+
+  const cmdInput = document.getElementById('settingStartCmd');
+  const cmdHint  = document.getElementById('settingCmdHint');
+  if (cmdInput) cmdInput.placeholder = isWorker ? 'python bot.py' : 'node app.js --port={PORT}';
+  if (cmdHint)  cmdHint.innerHTML    = isWorker
+    ? 'Use <code>{PORT}</code> only if your worker needs a port (e.g. webhook receiver).'
+    : 'Must include <code>{PORT}</code>';
+}
+
 async function saveSiteSettings(siteId) {
-  const domain = document.getElementById('settingDomain')?.value.trim();
+  const runtime       = document.getElementById('settingRuntime')?.value;
+  const domain        = document.getElementById('settingDomain')?.value.trim();
   const start_command = document.getElementById('settingStartCmd')?.value.trim();
-  const php_version = document.getElementById('settingPhpVersion')?.value;
+  const php_version   = document.getElementById('settingPhpVersion')?.value;
   try {
-    const updated = await api.patch(`/sites/${siteId}`, { domain: domain || null, start_command: start_command || null, php_version });
+    const updated = await api.patch(`/sites/${siteId}`, {
+      runtime: runtime || null,
+      domain: domain || null,
+      start_command: start_command || null,
+      php_version
+    });
     currentSite = { ...currentSite, ...updated };
-    toast.success('Settings saved');
+    toast.success('Settings saved — restart the site for runtime changes to take effect');
   } catch (e) { toast.error(e.message); }
 }
 

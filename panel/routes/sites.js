@@ -185,11 +185,19 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   const site = db.prepare('SELECT * FROM sites WHERE id = ?').get(req.params.id);
   if (!site) return res.status(404).json({ error: 'Site not found' });
 
-  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id, git_auto_deploy, mem_limit_mb, cpu_quota_pct, restart_schedule } = req.body;
+  const { domain, start_command, php_version, env_vars, git_repo, git_branch, cert_id, git_auto_deploy, mem_limit_mb, cpu_quota_pct, restart_schedule, runtime } = req.body;
 
-  if (start_command && !start_command.includes('{PORT}') &&
-      (site.runtime === 'custom' || site.runtime === 'node')) {
-    return res.status(400).json({ error: 'start_command must contain {PORT}' });
+  // Validate runtime if changing it
+  const validRuntimes = ['static', 'php', 'node', 'custom', 'worker'];
+  if (runtime !== undefined && !validRuntimes.includes(runtime)) {
+    return res.status(400).json({ error: 'Invalid runtime' });
+  }
+  const effectiveRuntime = runtime || site.runtime;
+
+  const effectiveCmd = start_command !== undefined ? start_command : site.start_command;
+  if (effectiveCmd && !effectiveCmd.includes('{PORT}') &&
+      (effectiveRuntime === 'custom' || effectiveRuntime === 'node')) {
+    return res.status(400).json({ error: 'start_command must contain {PORT} for node/custom runtimes' });
   }
 
   // Validate cert_id if provided
@@ -209,6 +217,18 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
   }
   const newSchedule = restart_schedule !== undefined ? (restart_schedule || null) : undefined;
 
+  // Handle port changes when runtime changes
+  let newPort = undefined; // undefined = no change
+  if (runtime && runtime !== site.runtime) {
+    const needsPort = (runtime === 'node' || runtime === 'custom') ||
+                      (runtime === 'worker' && effectiveCmd?.includes('{PORT}'));
+    if (needsPort && !site.port) {
+      newPort = pm.findFreePort();
+    } else if (!needsPort && site.port) {
+      newPort = null; // clear the port
+    }
+  }
+
   db.prepare(`
     UPDATE sites SET
       domain = COALESCE(?, domain),
@@ -221,7 +241,9 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
       git_auto_deploy = COALESCE(?, git_auto_deploy),
       mem_limit_mb = CASE WHEN ? IS NOT NULL THEN ? ELSE mem_limit_mb END,
       cpu_quota_pct = CASE WHEN ? IS NOT NULL THEN ? ELSE cpu_quota_pct END,
-      restart_schedule = CASE WHEN ? IS NOT NULL THEN ? ELSE restart_schedule END
+      restart_schedule = CASE WHEN ? IS NOT NULL THEN ? ELSE restart_schedule END,
+      runtime = COALESCE(?, runtime),
+      port = CASE WHEN ? IS NOT NULL THEN ? ELSE port END
     WHERE id = ?
   `).run(
     domain ?? null, start_command ?? null, php_version ?? null, env_vars ?? null,
@@ -232,6 +254,8 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
     newMemLimit  !== undefined ? 1 : null, newMemLimit  !== undefined ? newMemLimit  : null,
     newCpuQuota  !== undefined ? 1 : null, newCpuQuota  !== undefined ? newCpuQuota  : null,
     newSchedule  !== undefined ? 1 : null, newSchedule  !== undefined ? newSchedule  : null,
+    runtime ?? null,
+    newPort !== undefined ? 1 : null, newPort !== undefined ? newPort : null,
     site.id
   );
 
@@ -253,7 +277,23 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
     else scheduler.clearSchedule(site.id);
   }
 
-  if (updated.runtime !== 'worker') {
+  // Handle nginx changes when runtime changes
+  if (runtime && runtime !== site.runtime) {
+    try {
+      if (runtime === 'worker') {
+        // Switching TO worker — remove nginx config
+        nginx.removeSiteConfig(site.name);
+        if (site.runtime === 'php') nginx.removePHPPool(site);
+        nginx.reloadNginx();
+      } else {
+        // Switching FROM worker (or between web runtimes) — write nginx config
+        if (site.runtime === 'php' && runtime !== 'php') nginx.removePHPPool(site);
+        nginx.writeSiteConfig(updated);
+        if (runtime === 'php') nginx.writePHPPool(updated);
+        nginx.reloadNginx();
+      }
+    } catch (e) { console.error('Nginx error:', e.message); }
+  } else if (updated.runtime !== 'worker') {
     try {
       nginx.writeSiteConfig(updated);
       if (updated.runtime === 'php') nginx.writePHPPool(updated);
