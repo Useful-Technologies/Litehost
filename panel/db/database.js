@@ -90,6 +90,8 @@ try { db.exec(`ALTER TABLE sites ADD COLUMN webhook_secret TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN sys_user TEXT`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN mem_limit_mb INTEGER`); } catch {}
 try { db.exec(`ALTER TABLE sites ADD COLUMN cpu_quota_pct INTEGER`); } catch {}
+// Scheduled restart column
+try { db.exec(`ALTER TABLE sites ADD COLUMN restart_schedule TEXT`); } catch {}
 
 // Generate deploy tokens and webhook secrets for any sites that don't have them
 const crypto = require('crypto');
