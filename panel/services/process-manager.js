@@ -32,6 +32,17 @@ function isPortListening(port) {
   }
 }
 
+// Return the PID listening on a port, or null if not found.
+function getPortPid(port) {
+  try {
+    const out = execSync(`ss -tlnp sport = :${port}`, { stdio: 'pipe' }).toString();
+    const match = out.match(/pid=(\d+)/);
+    return match ? parseInt(match[1]) : null;
+  } catch {
+    return null;
+  }
+}
+
 function findFreePort() {
   const used = getUsedPorts();
   for (let p = PORT_START; p <= PORT_END; p++) {
@@ -154,43 +165,34 @@ function stopSite(siteId) {
   const row = stmts.getSiteName.get(siteId);
   const siteName = row?.name;
 
-  // 1. Kill the directly tracked process — most reliable, works even if
-  //    sys_user / cgroup is not configured.
-  const proc = processes.get(siteId);
-  if (proc) {
-    try { proc.kill('SIGKILL'); } catch {}
-  }
-
-  // 2. pkill by Linux user — catches any workers that forked off the main
-  //    process.  Only effective when sys_user is set; exit code 1 (no match)
-  //    is silently ignored.
-  if (siteName) {
-    const sysUser = `lh-${siteName}`.slice(0, 31);
-    try { execSync(`pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
-  }
-
-  // 3. cgroup.kill — atomically kills everything still in the cgroup.
-  //    Also removes the cgroup so startSite gets a clean slate.
+  // 1. cgroup.kill — writes '1' to cgroup.kill; the kernel kills every process
+  //    in the cgroup atomically regardless of UID.  Most reliable when the
+  //    process was freshly started (addToCgroup ran) or recovered (see below).
   if (siteName) {
     cgroup.killCgroup(siteName);
     cgroup.removeCgroup(siteName);
   }
 
-  // 4. Port-based kill — last resort, works regardless of user/cgroup state.
-  //    Try fuser first; fall back to ss + kill if fuser isn't installed.
+  // 2. sudo pkill by Linux user — catches anything that somehow escaped the
+  //    cgroup (e.g. a process that forked before addToCgroup ran).
+  //    Requires: litehost ALL=(root) NOPASSWD: /usr/bin/pkill -KILL -u lh-*
+  if (siteName) {
+    const sysUser = `lh-${siteName}`.slice(0, 31);
+    try { execSync(`sudo pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
+  }
+
+  // 3. Direct kill on the tracked ChildProcess object (fallback for sites
+  //    running as litehost with no sys_user, e.g. before migration ran).
+  const proc = processes.get(siteId);
+  if (proc) {
+    try { proc.kill('SIGKILL'); } catch {}
+  }
+
+  // 4. Port-based kill — last resort.
+  //    sudo fuser -k guarantees it can kill any user's process on the port.
   const site = stmts.getSitePort.get(siteId);
   if (site?.port) {
-    const port = site.port;
-    try {
-      execSync(`fuser -k ${port}/tcp`, { stdio: 'pipe' });
-    } catch {
-      // fuser not installed — use ss to find and kill the PID directly
-      try {
-        const out = execSync(`ss -tlnp 'sport = :${port}'`, { stdio: 'pipe' }).toString();
-        const match = out.match(/pid=(\d+)/);
-        if (match) execSync(`kill -9 ${match[1]}`, { stdio: 'pipe' });
-      } catch {}
-    }
+    try { execSync(`sudo fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
   }
 
   processes.delete(siteId);
@@ -215,9 +217,16 @@ function recoverProcesses() {
     }
 
     if (isPortListening(site.port)) {
-      // Process survived — keep as-is but recreate cgroup so monitoring works
+      // Process survived — recreate cgroup and add the surviving PID so that
+      // stopSite can kill it via cgroup.kill even though it's not in the Map.
       cgroup.createCgroup(site.name, site.mem_limit_mb || null, site.cpu_quota_pct || null);
-      console.log(`[pm] Site "${site.name}" still running on port ${site.port}`);
+      const pid = getPortPid(site.port);
+      if (pid) {
+        cgroup.addToCgroup(site.name, pid);
+        console.log(`[pm] Site "${site.name}" still running (pid ${pid}) — added to cgroup`);
+      } else {
+        console.log(`[pm] Site "${site.name}" still running on port ${site.port}`);
+      }
     } else {
       console.log(`[pm] Site "${site.name}" was running but process is gone — restarting…`);
       try {
