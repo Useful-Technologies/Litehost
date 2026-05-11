@@ -126,14 +126,17 @@ router.post('/run', requireAuth, requireOwner, async (req, res) => {
     `cp -r ${tmpDir}/panel/. ${PANEL_DIR}/`,
     `rm -rf ${tmpDir}`,
     `npm install --prefix ${PANEL_DIR} --production --no-audit`,
-    `sudo systemctl restart litehost`,
   ];
 
   let stepIdx = 0;
 
   function runNext() {
     if (stepIdx >= steps.length) {
+      // All file steps done — tell the client we're restarting, then exit.
+      // systemd (Restart=always) brings the panel back up with the new code.
+      send('Restarting panel service…');
       done(true, 'Upgrade complete — reloading…');
+      setTimeout(() => process.exit(0), 500);
       return;
     }
     const cmd = steps[stepIdx++];
