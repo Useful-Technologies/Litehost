@@ -95,7 +95,7 @@ router.post('/', requireAuth, requireOwner, (req, res) => {
   const slug = slugify(name);
   if (!slug) return res.status(400).json({ error: 'Invalid site name' });
 
-  // Validate custom/node sites
+  // Validate runtimes that require {PORT}
   if ((runtime === 'custom' || runtime === 'node') && start_command) {
     if (!start_command.includes('{PORT}')) {
       return res.status(400).json({ error: 'start_command must contain {PORT} placeholder' });
@@ -110,8 +110,11 @@ router.post('/', requireAuth, requireOwner, (req, res) => {
     if (domainTaken) return res.status(409).json({ error: 'Domain already in use' });
   }
 
+  // Assign a port when {PORT} is used in the command
   let port = null;
-  if (runtime === 'node' || runtime === 'custom') {
+  const needsPort = (runtime === 'node' || runtime === 'custom') ||
+                    (runtime === 'worker' && start_command?.includes('{PORT}'));
+  if (needsPort) {
     try { port = pm.findFreePort(); }
     catch (e) { return res.status(500).json({ error: e.message }); }
   }
@@ -143,13 +146,15 @@ router.post('/', requireAuth, requireOwner, (req, res) => {
   // Write site config JSON
   fs.writeFileSync(`${CONF_DIR}/${slug}.json`, JSON.stringify(site, null, 2));
 
-  // Write nginx config (+ PHP-FPM pool for php sites) and reload
-  try {
-    nginx.writeSiteConfig(site);
-    if (site.runtime === 'php') nginx.writePHPPool(site);
-    nginx.reloadNginx();
-  } catch (e) {
-    console.error('Nginx config error:', e.message);
+  // Worker runtime has no nginx — skip config entirely
+  if (site.runtime !== 'worker') {
+    try {
+      nginx.writeSiteConfig(site);
+      if (site.runtime === 'php') nginx.writePHPPool(site);
+      nginx.reloadNginx();
+    } catch (e) {
+      console.error('Nginx config error:', e.message);
+    }
   }
 
   db.prepare("INSERT INTO activity_log (user_id, site_id, action) VALUES (?, ?, 'create_site')").run(req.user.id, site.id);
@@ -248,11 +253,13 @@ router.patch('/:id', requireAuth, requireSitePermission('settings'), (req, res) 
     else scheduler.clearSchedule(site.id);
   }
 
-  try {
-    nginx.writeSiteConfig(updated);
-    if (updated.runtime === 'php') nginx.writePHPPool(updated);
-    nginx.reloadNginx();
-  } catch (e) { console.error('Nginx error:', e.message); }
+  if (updated.runtime !== 'worker') {
+    try {
+      nginx.writeSiteConfig(updated);
+      if (updated.runtime === 'php') nginx.writePHPPool(updated);
+      nginx.reloadNginx();
+    } catch (e) { console.error('Nginx error:', e.message); }
+  }
 
   res.json(updated);
 });
@@ -297,8 +304,8 @@ router.post('/:id/process/:action', requireAuth, requireSitePermission('deploy')
 
   const { action } = req.params;
 
-  if (!['node', 'custom'].includes(site.runtime)) {
-    return res.status(400).json({ error: 'Process control only for node/custom sites' });
+  if (!['node', 'custom', 'worker'].includes(site.runtime)) {
+    return res.status(400).json({ error: 'Process control only for node/custom/worker sites' });
   }
 
   try {
@@ -405,8 +412,8 @@ router.post('/:id/git/deploy', requireAuth, requireSitePermission('deploy'), asy
       log.push(reset.trim());
     }
 
-    // Restart the process (node/custom) or reload nginx (static/php)
-    if (['node', 'custom'].includes(site.runtime)) {
+    // Restart the process (node/custom/worker) or reload nginx (static/php)
+    if (['node', 'custom', 'worker'].includes(site.runtime)) {
       pm.stopSite(site.id);
       // Brief pause to let the kernel release the port after SIGKILL
       await new Promise(r => setTimeout(r, 500));

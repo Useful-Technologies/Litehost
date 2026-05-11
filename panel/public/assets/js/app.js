@@ -232,9 +232,32 @@ async function switchSiteTab(tab) {
 function siteOverviewTab(site) {
   const dns = site.dns || {};
   const ssl = site.ssl || {};
-  const isProcess = ['node', 'custom'].includes(site.runtime);
+  const isProcess = ['node', 'custom', 'worker'].includes(site.runtime);
+  const isWorker = site.runtime === 'worker';
+
+  const resolvedCmd = site.start_command
+    ? (site.port ? site.start_command.replace(/{PORT}/g, site.port) : site.start_command)
+    : null;
 
   return `
+    ${isWorker ? `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="info-block">
+        <div class="info-icon">🤖</div>
+        <div class="info-text">
+          <div class="info-label">Runtime</div>
+          <div class="info-value">${runtimeBadge(site.runtime)}</div>
+        </div>
+      </div>
+      ${site.port ? `
+      <div class="info-block">
+        <div class="info-icon">🔌</div>
+        <div class="info-text">
+          <div class="info-label">Port</div>
+          <div class="info-value"><code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${site.port}</code> <span style="font-size:0.75rem;color:var(--muted)">(direct, no nginx)</span></div>
+        </div>
+      </div>` : '<div></div>'}
+    </div>` : `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="info-block">
         <div class="info-icon">🌐</div>
@@ -266,7 +289,7 @@ function siteOverviewTab(site) {
           <div style="font-size:0.75rem;color:var(--muted);margin-top:2px">${ssl.message || ''}</div>
         </div>
       </div>
-    </div>
+    </div>`}
 
     ${isProcess ? `
     <div class="card">
@@ -280,12 +303,12 @@ function siteOverviewTab(site) {
       </div>
       <div style="font-size:0.85rem;color:var(--muted)">
         Status: ${statusBadge(site.status)}
-        ${site.port ? `&nbsp;&nbsp;Internal port: <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${site.port}</code>` : ''}
+        ${site.port ? `&nbsp;&nbsp;Port: <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${site.port}</code>` : ''}
       </div>
-      ${site.start_command ? `<div style="margin-top:10px;font-size:0.8rem;color:var(--muted)">Command: <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${site.start_command.replace('{PORT}', site.port)}</code></div>` : ''}
+      ${resolvedCmd ? `<div style="margin-top:10px;font-size:0.8rem;color:var(--muted)">Command: <code style="background:var(--surface2);padding:2px 6px;border-radius:4px">${resolvedCmd}</code></div>` : ''}
     </div>` : ''}
 
-    ${currentUser.role === 'owner' && site.domain ? `
+    ${currentUser.role === 'owner' && site.domain && !isWorker ? `
     <div class="card" ${ssl.status === 'none' || ssl.status === 'expired' ? 'style="border-color:var(--yellow)33"' : ''}>
       <div class="card-header">
         <span class="card-title">🔒 SSL Certificate</span>
@@ -370,15 +393,16 @@ function siteLogsTab(site) {
 }
 
 function siteSettingsTab(site) {
-  const isProcess = ['node', 'custom'].includes(site.runtime);
+  const isProcess = ['node', 'custom', 'worker'].includes(site.runtime);
+  const isWorker = site.runtime === 'worker';
   return `
     <div class="card">
       <div class="card-header"><span class="card-title">Site Settings</span></div>
       <div class="form-row">
-        <div class="form-group">
+        ${!isWorker ? `<div class="form-group">
           <label>Domain</label>
           <input type="text" id="settingDomain" value="${site.domain || ''}" placeholder="example.com" />
-        </div>
+        </div>` : '<div></div>'}
         ${site.runtime === 'php' ? `
         <div class="form-group">
           <label>PHP Version</label>
@@ -391,8 +415,8 @@ function siteSettingsTab(site) {
       <div class="form-row single">
         <div class="form-group">
           <label>Start Command</label>
-          <input type="text" id="settingStartCmd" value="${site.start_command || ''}" placeholder="node app.js --port={PORT}" />
-          <div class="form-hint">Must include <code>{PORT}</code></div>
+          <input type="text" id="settingStartCmd" value="${site.start_command || ''}" placeholder="${isWorker ? 'python bot.py' : 'node app.js --port={PORT}'}" />
+          <div class="form-hint">${isWorker ? 'Use <code>{PORT}</code> only if your worker needs a port (e.g. webhook receiver).' : 'Must include <code>{PORT}</code>'}</div>
         </div>
       </div>` : ''}
       <div style="display:flex;gap:10px;margin-top:8px">
@@ -550,8 +574,18 @@ async function renderUsers() {
 // ─── Actions ──────────────────────────────────────────────────────────────────
 function updateRuntimeFields() {
   const rt = document.getElementById('newSiteRuntime').value;
+  const isWorker = rt === 'worker';
   document.getElementById('phpFields').style.display = rt === 'php' ? '' : 'none';
-  document.getElementById('cmdFields').style.display = ['node', 'custom'].includes(rt) ? '' : 'none';
+  document.getElementById('cmdFields').style.display = ['node', 'custom', 'worker'].includes(rt) ? '' : 'none';
+  document.getElementById('newSiteDomainGroup').style.display = isWorker ? 'none' : '';
+  // Update hint — {PORT} is optional for worker
+  const hint = document.getElementById('cmdFieldsHint');
+  if (hint) hint.innerHTML = isWorker
+    ? 'Use <code>{PORT}</code> if your worker needs a port (e.g. webhook receiver). Otherwise leave it out.'
+    : 'Must include <code>{PORT}</code> — this will be replaced with an assigned port';
+  // Update placeholder
+  const cmd = document.getElementById('newStartCmd');
+  if (cmd) cmd.placeholder = isWorker ? 'python bot.py' : 'node server.js --port={PORT}';
 }
 
 async function createSite() {

@@ -16,7 +16,7 @@ const stmts = {
   setRunning:   db.prepare("UPDATE sites SET status = 'running' WHERE id = ?"),
   setStopped:   db.prepare("UPDATE sites SET status = 'stopped' WHERE id = ?"),
   setError:     db.prepare("UPDATE sites SET status = 'error' WHERE id = ?"),
-  getRunning:   db.prepare("SELECT * FROM sites WHERE runtime IN ('node', 'custom') AND status = 'running'"),
+  getRunning:   db.prepare("SELECT * FROM sites WHERE runtime IN ('node', 'custom', 'worker') AND status = 'running'"),
 };
 
 function getUsedPorts() {
@@ -53,10 +53,14 @@ function findFreePort() {
 
 function buildCommand(site) {
   if (!site.start_command) throw new Error('No start command defined');
-  if (!site.start_command.includes('{PORT}')) {
+  // Worker runtime: {PORT} is optional
+  if (site.runtime !== 'worker' && !site.start_command.includes('{PORT}')) {
     throw new Error('start_command must contain {PORT} placeholder');
   }
-  return site.start_command.replace(/{PORT}/g, String(site.port));
+  if (site.port) {
+    return site.start_command.replace(/{PORT}/g, String(site.port));
+  }
+  return site.start_command;
 }
 
 function parseEnv(jsonStr) {
@@ -104,7 +108,7 @@ function startSite(site) {
     HOME: siteDir,
     USER: site.sys_user || 'litehost',
     ...parseEnv(site.env_vars),
-    PORT: String(site.port),
+    ...(site.port ? { PORT: String(site.port) } : {}),
   };
 
   // Ensure cgroup exists for this site (idempotent)

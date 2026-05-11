@@ -67,7 +67,7 @@
         <input type="text" id="newSiteName" placeholder="my-app" pattern="[a-zA-Z0-9-]+" />
         <div class="form-hint">Lowercase letters, numbers, hyphens</div>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="newSiteDomainGroup">
         <label>Domain (optional)</label>
         <input type="text" id="newSiteDomain" placeholder="example.com" />
       </div>
@@ -80,6 +80,7 @@
           <option value="php">🐘 PHP</option>
           <option value="node">⬡ Node.js</option>
           <option value="custom">⚙ Custom</option>
+          <option value="worker">🤖 Worker / Background Service</option>
         </select>
       </div>
     </div>
@@ -98,7 +99,7 @@
         <div class="form-group">
           <label>Start Command *</label>
           <input type="text" id="newStartCmd" placeholder="node server.js --port={PORT}" />
-          <div class="form-hint">Must include <code>{PORT}</code> — this will be replaced with an assigned port</div>
+          <div class="form-hint" id="cmdFieldsHint">Must include <code>{PORT}</code> — this will be replaced with an assigned port</div>
         </div>
       </div>
     </div>
