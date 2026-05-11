@@ -401,6 +401,26 @@ function siteSettingsTab(site) {
       </div>
     </div>
 
+    ${currentUser.role === 'owner' && isProcess ? `
+    <div class="card">
+      <div class="card-header"><span class="card-title">🔁 Auto-restart</span></div>
+      <div class="form-row single">
+        <div class="form-group">
+          <label>Restart schedule</label>
+          <select id="settingRestartSchedule">
+            <option value="" ${!site.restart_schedule ? 'selected' : ''}>Off</option>
+            <option value="10min" ${site.restart_schedule === '10min' ? 'selected' : ''}>Every 10 minutes</option>
+            <option value="30min" ${site.restart_schedule === '30min' ? 'selected' : ''}>Every 30 minutes</option>
+            <option value="60min" ${site.restart_schedule === '60min' ? 'selected' : ''}>Every hour</option>
+          </select>
+          <div class="form-hint">Only restarts the site if it's currently running. Manual stops are respected.</div>
+        </div>
+      </div>
+      <div style="margin-top:8px">
+        <button class="btn btn-primary" onclick="saveRestartSchedule(${site.id})">Save Schedule</button>
+      </div>
+    </div>` : ''}
+
     ${currentUser.role === 'owner' ? `
     <div class="card">
       <div class="card-header"><span class="card-title">⚡ Resource Limits</span></div>
@@ -1038,6 +1058,21 @@ async function saveResourceLimits(siteId) {
     const updated = await api.patch(`/sites/${siteId}`, { mem_limit_mb, cpu_quota_pct });
     currentSite = { ...currentSite, ...updated };
     toast.success('Resource limits updated — takes effect immediately');
+  } catch (e) { toast.error(e.message); }
+}
+
+// ─── Auto-restart schedule ───────────────────────────────────────────────────
+async function saveRestartSchedule(siteId) {
+  const sel = document.getElementById('settingRestartSchedule');
+  if (!sel) return;
+  const restart_schedule = sel.value || null;
+  try {
+    const updated = await api.patch(`/sites/${siteId}`, { restart_schedule });
+    currentSite = { ...currentSite, ...updated };
+    const label = restart_schedule
+      ? { '10min': 'every 10 minutes', '30min': 'every 30 minutes', '60min': 'every hour' }[restart_schedule] || restart_schedule
+      : 'disabled';
+    toast.success(`Auto-restart ${label === 'disabled' ? 'disabled' : 'set to ' + label}`);
   } catch (e) { toast.error(e.message); }
 }
 
