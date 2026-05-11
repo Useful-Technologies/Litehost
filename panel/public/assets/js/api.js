@@ -71,7 +71,7 @@ function formatDate(d) { return d ? new Date(d).toLocaleString() : '—'; }
 function formatDateShort(d) { return d ? new Date(d).toLocaleDateString() : '—'; }
 
 function runtimeBadge(rt) {
-  const map = { static: ['badge-blue', '🌐 Static'], php: ['badge-purple', '🐘 PHP'], node: ['badge-green', '⬡ Node.js'], custom: ['badge-yellow', '⚙ Custom'] };
+  const map = { static: ['badge-blue', '🌐 Static'], php: ['badge-purple', '🐘 PHP'], node: ['badge-green', '⬡ Node.js'], custom: ['badge-yellow', '⚙ Custom'], worker: ['badge-orange', '🤖 Worker'] };
   const [cls, label] = map[rt] || ['badge-muted', rt];
   return `<span class="badge ${cls}">${label}</span>`;
 }

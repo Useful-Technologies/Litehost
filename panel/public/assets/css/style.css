@@ -348,6 +348,7 @@ td { padding: 12px 16px; font-size: 0.875rem; vertical-align: middle; }
 .badge-yellow { background: #f59e0b18; color: var(--yellow); border: 1px solid #f59e0b33; }
 .badge-blue   { background: #4f8ef718; color: var(--accent); border: 1px solid #4f8ef733; }
 .badge-purple { background: #a855f718; color: var(--purple); border: 1px solid #a855f733; }
+.badge-orange { background: #f9731618; color: #f97316;    border: 1px solid #f9731633; }
 .badge-muted  { background: var(--surface2); color: var(--muted); border: 1px solid var(--border); }
 
 /* Buttons */
