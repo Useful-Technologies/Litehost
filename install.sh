@@ -235,6 +235,11 @@ ${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl reload php*-fpm
 
 # Self-upgrade: restart the panel service
 ${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/systemctl restart litehost
+
+# Site process management — kill site processes (they run as lh-* users,
+# which the panel (litehost) cannot signal directly without root)
+${LITEHOST_USER} ALL=(root) NOPASSWD: /usr/bin/pkill -KILL -u lh-*
+${LITEHOST_USER} ALL=(root) NOPASSWD: /bin/fuser -k *
 SUDOEOF
 chmod 440 /etc/sudoers.d/litehost
 # Validate sudoers syntax
