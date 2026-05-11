@@ -165,34 +165,39 @@ function stopSite(siteId) {
   const row = stmts.getSiteName.get(siteId);
   const siteName = row?.name;
 
-  // 1. cgroup.kill — writes '1' to cgroup.kill; the kernel kills every process
-  //    in the cgroup atomically regardless of UID.  Most reliable when the
-  //    process was freshly started (addToCgroup ran) or recovered (see below).
+  // 1. Kill the tracked process's entire process group.
+  //    spawn() uses detached:true so the child becomes a process group leader
+  //    (PGID = child PID).  process.kill(-pid, 'SIGKILL') sends SIGKILL to
+  //    every process in that group — master + all workers — in one shot.
+  //    No sudo needed: all site processes run as the same user as the panel.
+  const proc = processes.get(siteId);
+  if (proc?.pid) {
+    try { process.kill(-proc.pid, 'SIGKILL'); } catch {} // kill whole process group
+    try { proc.kill('SIGKILL'); } catch {}               // belt-and-suspenders on parent
+  }
+
+  // 2. cgroup.kill — atomically kills any process in the cgroup regardless of
+  //    UID.  Covers properly isolated sites (lh-* users) and survives fork tricks.
   if (siteName) {
     cgroup.killCgroup(siteName);
     cgroup.removeCgroup(siteName);
   }
 
-  // 2. sudo pkill by Linux user — catches anything that somehow escaped the
-  //    cgroup (e.g. a process that forked before addToCgroup ran).
-  //    Requires: litehost ALL=(root) NOPASSWD: /usr/bin/pkill -KILL -u lh-*
-  if (siteName) {
-    const sysUser = `lh-${siteName}`.slice(0, 31);
-    try { execSync(`sudo pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
-  }
-
-  // 3. Direct kill on the tracked ChildProcess object (fallback for sites
-  //    running as litehost with no sys_user, e.g. before migration ran).
-  const proc = processes.get(siteId);
-  if (proc) {
-    try { proc.kill('SIGKILL'); } catch {}
-  }
-
-  // 4. Port-based kill — last resort.
-  //    sudo fuser -k guarantees it can kill any user's process on the port.
+  // 3. Port-based process group kill — handles recovered processes that are not
+  //    in the Map.  getPortPid() finds the master listening on the port, which
+  //    is the process group leader (gunicorn master, node, etc.).
   const site = stmts.getSitePort.get(siteId);
   if (site?.port) {
-    try { execSync(`sudo fuser -k ${site.port}/tcp`, { stdio: 'pipe' }); } catch {}
+    const pid = getPortPid(site.port);
+    if (pid) {
+      try { process.kill(-pid, 'SIGKILL'); } catch {} // kill whole group by port PID
+      try { execSync(`pkill -KILL -P ${pid}`, { stdio: 'pipe' }); } catch {} // kill children
+    }
+    // Also sudo pkill by lh-* user for properly isolated sites
+    if (siteName) {
+      const sysUser = `lh-${siteName}`.slice(0, 31);
+      try { execSync(`sudo pkill -KILL -u ${sysUser}`, { stdio: 'pipe' }); } catch {}
+    }
   }
 
   processes.delete(siteId);
