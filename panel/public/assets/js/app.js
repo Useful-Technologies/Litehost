@@ -489,6 +489,18 @@ function siteSettingsTab(site) {
     </div>` : ''}
 
     <div class="card">
+      <div class="card-header" style="display:flex;align-items:center;justify-content:space-between">
+        <span class="card-title">🔧 Environment Variables</span>
+        <button class="btn btn-sm btn-secondary" onclick="addEnvRow()">+ Add Variable</button>
+      </div>
+      <div id="envVarsList">${renderEnvRows(site.env_vars)}</div>
+      <div class="form-hint" style="margin-top:8px">Variables are injected at process start. Changes take effect on next restart.</div>
+      <div style="margin-top:10px">
+        <button class="btn btn-primary" onclick="saveEnvVars(${site.id})">Save Variables</button>
+      </div>
+    </div>
+
+    <div class="card">
       <div class="card-header"><span class="card-title">🔗 Git Repository</span></div>
       <div class="form-row">
         <div class="form-group">
@@ -631,6 +643,49 @@ async function processAction(siteId, action) {
     const site = await api.get(`/sites/${siteId}`);
     currentSite = site;
     renderSiteContent();
+  } catch (e) { toast.error(e.message); }
+}
+
+// ─── Environment Variables ────────────────────────────────────────────────────
+function renderEnvRows(envJson) {
+  let obj = {};
+  try { obj = JSON.parse(envJson || '{}'); } catch {}
+  const entries = Object.entries(obj);
+  if (!entries.length) return '<div class="env-empty" id="envEmpty">No variables set.</div>';
+  return entries.map(([k, v]) => envRow(k, v)).join('');
+}
+
+function envRow(k = '', v = '') {
+  return `<div class="env-row">
+    <input class="env-key" type="text" placeholder="KEY" value="${k.replace(/"/g,'&quot;')}" spellcheck="false" autocomplete="off" />
+    <span class="env-sep">=</span>
+    <input class="env-val" type="text" placeholder="value" value="${v.replace(/"/g,'&quot;')}" spellcheck="false" autocomplete="off" />
+    <button class="env-del" onclick="this.closest('.env-row').remove()" title="Remove">✕</button>
+  </div>`;
+}
+
+function addEnvRow() {
+  const list = document.getElementById('envVarsList');
+  if (!list) return;
+  const empty = list.querySelector('.env-empty');
+  if (empty) empty.remove();
+  list.insertAdjacentHTML('beforeend', envRow());
+  list.lastElementChild.querySelector('.env-key').focus();
+}
+
+async function saveEnvVars(siteId) {
+  const list = document.getElementById('envVarsList');
+  if (!list) return;
+  const obj = {};
+  list.querySelectorAll('.env-row').forEach(row => {
+    const k = row.querySelector('.env-key').value.trim();
+    const v = row.querySelector('.env-val').value;
+    if (k) obj[k] = v;
+  });
+  try {
+    const updated = await api.patch(`/sites/${siteId}`, { env_vars: JSON.stringify(obj) });
+    currentSite = { ...currentSite, ...updated };
+    toast.success('Environment variables saved — restart to apply');
   } catch (e) { toast.error(e.message); }
 }
 
