@@ -1116,7 +1116,7 @@ function startSystemPoller() {
         managed.push(`<div class="proc-mem-row">
           <span class="proc-mem-name">🌐 ${siteName}</span>
           <span class="proc-mem-rss">${fmtBytes(site.rss)} RSS</span>
-          <span class="proc-mem-heap">pid ${site.pid}</span>
+          <span class="proc-mem-heap">cgroup total</span>
         </div>`);
       }
 
