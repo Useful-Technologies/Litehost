@@ -8,7 +8,7 @@ const db = require('../db/database');
 
 // All running process-based sites (node/custom/worker) — used by sampleProcs()
 const stmtRunningSites = db.prepare(
-  "SELECT id, name, mem_limit_mb FROM sites WHERE status = 'running' AND runtime IN ('node','custom','worker')"
+  "SELECT id, name, port, mem_limit_mb FROM sites WHERE status = 'running' AND runtime IN ('node','custom','worker')"
 );
 
 const router = express.Router();
@@ -176,6 +176,25 @@ function pidRss(pid) {
   } catch { return 0; }
 }
 
+// Sum RSS of every process in the same process group as pgid.
+// Used as fallback when a site's cgroup is empty (e.g. workers forked before
+// the cgroup was set up on an older panel restart).
+function procGroupRss(pgid) {
+  if (!pgid) return 0;
+  let total = 0;
+  try {
+    for (const entry of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8');
+        const afterName = stat.slice(stat.lastIndexOf(')') + 2);
+        if (parseInt(afterName.split(' ')[2]) === pgid) total += pidRss(parseInt(entry));
+      } catch {}
+    }
+  } catch {}
+  return total;
+}
+
 // Scan every entry in /proc, read Name + VmRSS.
 // Returns { top: top-N individual processes, grouped: aggregated by name }.
 // No subprocess — pure /proc reads.  Runs every ~30 s (same cadence as disk).
@@ -222,13 +241,20 @@ function sampleProcs() {
   stats.procs.panel.heapTotal = mu.heapTotal;
 
   // All running process sites from DB — covers both Map-tracked and recovered processes.
-  // cgroup memory.current is the authoritative source: it includes every forked worker
-  // in the cgroup, regardless of whether we hold a reference to the PID.
+  // Primary source: cgroup memory.current (counts all workers in the cgroup).
+  // Fallback: process-group RSS sum for sites whose workers predate the cgroup
+  // (e.g. multi-worker processes recovered from a pre-cgroup panel restart).
   const sites = stmtRunningSites.all();
   stats.procs.sites.length = 0;
   for (const row of sites) {
-    const rss = cgroup.readCgroupMemory(row.name);
-    if (rss === 0 && !pm.isRunning(row.id)) continue; // skip if cgroup gone and not tracked
+    let rss = cgroup.readCgroupMemory(row.name);
+    if (!rss && row.port) {
+      // Cgroup is empty — workers were forked before the cgroup was set up.
+      // Sum RSS of every process in the master's process group instead.
+      const masterPid = pm.getPortPid(row.port);
+      if (masterPid) rss = procGroupRss(masterPid);
+    }
+    if (!rss && !pm.isRunning(row.id)) continue; // truly gone
     stats.procs.sites.push({
       siteId:   row.id,
       rss,
