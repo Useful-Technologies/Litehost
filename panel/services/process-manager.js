@@ -213,6 +213,27 @@ function isRunning(siteId) {
   return !!(proc && proc.exitCode === null && proc.signalCode === null);
 }
 
+// ─── getPidsInGroup ───────────────────────────────────────────────────────────
+// Return all PIDs whose process-group ID equals pgid.
+// Used by recoverProcesses to pull every worker into the cgroup, not just master.
+function getPidsInGroup(pgid) {
+  const pids = [];
+  try {
+    for (const entry of fs.readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const stat = fs.readFileSync(`/proc/${entry}/stat`, 'utf8');
+        // Format: pid (name) state ppid pgrp …
+        // Skip past the "(name)" field (may contain spaces) via lastIndexOf.
+        const afterName = stat.slice(stat.lastIndexOf(')') + 2);
+        const pgrp = parseInt(afterName.split(' ')[2]);
+        if (pgrp === pgid) pids.push(parseInt(entry));
+      } catch {}
+    }
+  } catch {}
+  return pids;
+}
+
 // ─── recoverProcesses ─────────────────────────────────────────────────────────
 // On panel restart: reconcile DB status with reality, restarting any sites
 // that were running but whose process didn't survive the restart.
@@ -220,21 +241,25 @@ function recoverProcesses() {
   const sites = stmts.getRunning.all();
 
   for (const site of sites) {
-    if (!site.port || !site.start_command) {
+    if ((!site.port && !site.start_command) || (!site.port && site.runtime !== 'worker')) {
       stmts.setStopped.run(site.id);
       continue;
     }
 
-    if (isPortListening(site.port)) {
-      // Process survived — recreate cgroup and add the surviving PID so that
-      // stopSite can kill it via cgroup.kill even though it's not in the Map.
+    if (!site.port || isPortListening(site.port)) {
+      // Process survived — recreate cgroup and add the master PID plus every
+      // worker in its process group so memory.current is accurate immediately.
       cgroup.createCgroup(site.name, site.mem_limit_mb || null, site.cpu_quota_pct || null);
-      const pid = getPortPid(site.port);
+      const pid = site.port ? getPortPid(site.port) : null;
       if (pid) {
-        cgroup.addToCgroup(site.name, pid);
-        console.log(`[pm] Site "${site.name}" still running (pid ${pid}) — added to cgroup`);
+        // The master is the process-group leader (PGID = pid for detached procs).
+        // Add all group members so forked workers are counted in memory.current.
+        const groupPids = getPidsInGroup(pid);
+        const targets = groupPids.length ? groupPids : [pid];
+        for (const p of targets) cgroup.addToCgroup(site.name, p);
+        console.log(`[pm] Site "${site.name}" still running (pid ${pid}, ${targets.length} procs) — added to cgroup`);
       } else {
-        console.log(`[pm] Site "${site.name}" still running on port ${site.port}`);
+        console.log(`[pm] Site "${site.name}" still running — cgroup created`);
       }
     } else {
       console.log(`[pm] Site "${site.name}" was running but process is gone — restarting…`);
@@ -269,4 +294,6 @@ module.exports = {
   buildCommand,
   recoverProcesses,
   getTrackedPids,
+  getPortPid,
+  getPidsInGroup,
 };
