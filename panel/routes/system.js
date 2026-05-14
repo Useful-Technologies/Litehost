@@ -6,8 +6,10 @@ const pm = require('../services/process-manager');
 const cgroup = require('../services/cgroup');
 const db = require('../db/database');
 
-// Cached statement for site name/limit lookup
-const stmtGetSiteId = db.prepare('SELECT id, name, mem_limit_mb FROM sites WHERE id = ?');
+// All running process-based sites (node/custom/worker) — used by sampleProcs()
+const stmtRunningSites = db.prepare(
+  "SELECT id, name, mem_limit_mb FROM sites WHERE status = 'running' AND runtime IN ('node','custom','worker')"
+);
 
 const router = express.Router();
 
@@ -219,26 +221,19 @@ function sampleProcs() {
   stats.procs.panel.heapUsed  = mu.heapUsed;
   stats.procs.panel.heapTotal = mu.heapTotal;
 
-  // Tracked hosted-site child processes
-  const pids = pm.getTrackedPids(); // [{siteId, pid}]
+  // All running process sites from DB — covers both Map-tracked and recovered processes.
+  // cgroup memory.current is the authoritative source: it includes every forked worker
+  // in the cgroup, regardless of whether we hold a reference to the PID.
+  const sites = stmtRunningSites.all();
   stats.procs.sites.length = 0;
-  for (const { siteId, pid } of pids) {
-    const row = stmtGetSiteId.get(siteId);
-    const siteName = row?.name;
-
-    // Prefer cgroup memory.current (exact total including all workers),
-    // fall back to pidRss for sites not yet in a cgroup
-    const rss = siteName
-      ? (cgroup.readCgroupMemory(siteName) || pidRss(pid))
-      : pidRss(pid);
-
+  for (const row of sites) {
+    const rss = cgroup.readCgroupMemory(row.name);
+    if (rss === 0 && !pm.isRunning(row.id)) continue; // skip if cgroup gone and not tracked
     stats.procs.sites.push({
-      siteId,
-      pid,
+      siteId:   row.id,
       rss,
-      memLimit: row?.mem_limit_mb ? row.mem_limit_mb * 1024 * 1024 : null,
+      memLimit: row.mem_limit_mb ? row.mem_limit_mb * 1024 * 1024 : null,
     });
-
   }
 }
 
